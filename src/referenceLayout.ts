@@ -41,6 +41,7 @@ export interface ReferenceVoid {
   baseRadius: number;
   influence: number;
   spin: number;
+  active: boolean;
 }
 
 export interface ReferenceChannel {
@@ -81,6 +82,7 @@ export interface SavedReferenceVoid {
   y: number;
   baseRadius: number;
   influence: number;
+  active: boolean;
 }
 
 export interface SavedReferenceLayout {
@@ -299,8 +301,6 @@ export const referenceDefaults: ReferenceDefaults = {
     sphereContrast: 1.46,
     sphereRoughness: 0.7,
     sphereMetalness: 1,
-    haloOpacity: 0.48,
-    haloSoftness: 1,
     showTrails: true,
     feedbackTrail: false,
     feedbackDamp: 0.72,
@@ -341,6 +341,7 @@ export const createReferenceLayout = (
       baseRadius: item.radius * frameWidth,
       influence: item.influence * frameWidth,
       spin: item.spin,
+      active: true,
     })),
     channels: channelsNormalized.map((item) => ({
       points: item.points.map((point) => toWorldPoint(point, frameWidth, frameHeight)),
@@ -364,6 +365,7 @@ export const captureVoidLayout = (layout: ReferenceLayout): SavedReferenceLayout
     y: item.y,
     baseRadius: item.baseRadius,
     influence: item.influence,
+    active: item.active,
   })),
 });
 
@@ -388,6 +390,7 @@ export const restoreVoidLayout = (layout: ReferenceLayout, saved: SavedReference
     target.y = source.y;
     target.baseRadius = source.baseRadius;
     target.influence = source.influence;
+    target.active = typeof source.active === "boolean" ? source.active : true;
   }
 
   return true;

@@ -144,6 +144,7 @@ let controlPanel: ControlPanelApi | null = null;
 const pointerWorld = new Vector3();
 
 let selectedVoidIndex: number | null = null;
+let hoveredVoidIndex: number | null = null;
 let activePointerId: number | null = null;
 let dragMode: "move" | "radius" | null = null;
 let dragOffsetX = 0;
@@ -174,6 +175,14 @@ const setSelectedVoid = (index: number | null): void => {
   frameOverlay.update(lookParams, topologyParams);
 };
 
+const setHoveredVoid = (index: number | null): void => {
+  hoveredVoidIndex = index;
+  frameOverlay.setHoveredVoid(index);
+  renderer.domElement.style.cursor = activePointerId !== null
+    ? (dragMode === "radius" ? "ns-resize" : "grabbing")
+    : (index === null ? "default" : "pointer");
+};
+
 const getPointerWorld = (clientX: number, clientY: number): Vector3 => {
   const rect = renderer.domElement.getBoundingClientRect();
   const x = ((clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
@@ -186,12 +195,24 @@ const clampVoidPosition = (value: number, limit: number): number => {
   return Math.max(-limit, Math.min(limit, value));
 };
 
+const findInactiveVoidSlot = (): number | null => {
+  for (let i = 0; i < layout.voids.length; i += 1) {
+    if (!layout.voids[i].active) {
+      return i;
+    }
+  }
+  return null;
+};
+
 const findVoidAtWorld = (worldX: number, worldY: number): number | null => {
   let hitIndex: number | null = null;
   let bestDistanceSq = Number.POSITIVE_INFINITY;
 
   for (let i = 0; i < layout.voids.length; i += 1) {
     const voidNode = layout.voids[i];
+    if (!voidNode.active) {
+      continue;
+    }
     const radius = voidNode.baseRadius * topologyParams.voidRadiusScale;
     const dx = worldX - voidNode.x;
     const dy = worldY - voidNode.y;
@@ -305,7 +326,7 @@ const applyVoidRadius = (voidIndex: number, nextRadius: number): void => {
 };
 
 const onCanvasPointerDown = (event: PointerEvent): void => {
-  if (event.button !== 0) {
+  if (event.button !== 0 && event.button !== 1) {
     return;
   }
 
@@ -313,11 +334,24 @@ const onCanvasPointerDown = (event: PointerEvent): void => {
   const hitIndex = findVoidAtWorld(world.x, world.y);
   if (hitIndex === null) {
     setSelectedVoid(null);
+    setHoveredVoid(null);
     return;
   }
 
   event.preventDefault();
+  if (event.button === 1) {
+    layout.voids[hitIndex].active = false;
+    if (selectedVoidIndex === hitIndex) {
+      setSelectedVoid(null);
+    }
+    setHoveredVoid(null);
+    updateEditedVoid();
+    controlPanel?.setStatus(`Void ${hitIndex + 1} removed. Reset layout to restore it.`);
+    return;
+  }
+
   setSelectedVoid(hitIndex);
+  setHoveredVoid(hitIndex);
   activePointerId = event.pointerId;
   dragMode = event.shiftKey ? "radius" : "move";
   dragStartWorldY = world.y;
@@ -334,11 +368,14 @@ const onCanvasPointerDown = (event: PointerEvent): void => {
 };
 
 const onCanvasPointerMove = (event: PointerEvent): void => {
+  const world = getPointerWorld(event.clientX, event.clientY);
+  const hitIndex = findVoidAtWorld(world.x, world.y);
+  setHoveredVoid(hitIndex);
+
   if (activePointerId === null || event.pointerId !== activePointerId || selectedVoidIndex === null || dragMode === null) {
     return;
   }
 
-  const world = getPointerWorld(event.clientX, event.clientY);
   const voidNode = layout.voids[selectedVoidIndex];
 
   if (dragMode === "move") {
@@ -369,6 +406,7 @@ const stopVoidDrag = (pointerId?: number): void => {
   }
   activePointerId = null;
   dragMode = null;
+  renderer.domElement.style.cursor = hoveredVoidIndex === null ? "default" : "pointer";
   controlPanel?.setStatus(
     selectedVoidIndex === null
       ? "Reference flow loaded."
@@ -378,6 +416,11 @@ const stopVoidDrag = (pointerId?: number): void => {
 
 const onCanvasPointerUp = (event: PointerEvent): void => stopVoidDrag(event.pointerId);
 const onCanvasPointerCancel = (event: PointerEvent): void => stopVoidDrag(event.pointerId);
+const onCanvasPointerLeave = (): void => {
+  if (activePointerId === null) {
+    setHoveredVoid(null);
+  }
+};
 
 const onCanvasWheel = (event: WheelEvent): void => {
   const world = getPointerWorld(event.clientX, event.clientY);
@@ -398,11 +441,41 @@ const onCanvasWheel = (event: WheelEvent): void => {
   controlPanel?.setStatus(`Void ${targetIndex + 1} radius adjusted. Save layout if needed.`);
 };
 
+const onCanvasDoubleClick = (event: MouseEvent): void => {
+  if (event.button !== 0) {
+    return;
+  }
+
+  const world = getPointerWorld(event.clientX, event.clientY);
+  const hitIndex = findVoidAtWorld(world.x, world.y);
+  if (hitIndex !== null) {
+    return;
+  }
+
+  const inactiveIndex = findInactiveVoidSlot();
+  if (inactiveIndex === null) {
+    controlPanel?.setStatus("No removed void slots available. Middle-click a button first.", "error");
+    return;
+  }
+
+  const voidNode = layout.voids[inactiveIndex];
+  const margin = voidNode.baseRadius * topologyParams.voidRadiusScale + 0.02;
+  voidNode.x = clampVoidPosition(world.x, layout.halfWidth - margin);
+  voidNode.y = clampVoidPosition(world.y, layout.halfHeight - margin);
+  voidNode.active = true;
+  setSelectedVoid(inactiveIndex);
+  setHoveredVoid(inactiveIndex);
+  updateEditedVoid();
+  controlPanel?.setStatus(`Void ${inactiveIndex + 1} added. Save layout if needed.`);
+};
+
 renderer.domElement.addEventListener("pointerdown", onCanvasPointerDown);
 renderer.domElement.addEventListener("pointermove", onCanvasPointerMove);
 renderer.domElement.addEventListener("pointerup", onCanvasPointerUp);
 renderer.domElement.addEventListener("pointercancel", onCanvasPointerCancel);
+renderer.domElement.addEventListener("pointerleave", onCanvasPointerLeave);
 renderer.domElement.addEventListener("wheel", onCanvasWheel, { passive: false });
+renderer.domElement.addEventListener("dblclick", onCanvasDoubleClick);
 
 let lastRenderedTimestampMs = 0;
 let smoothedFps = 60;
@@ -441,7 +514,9 @@ const dispose = (): void => {
   renderer.domElement.removeEventListener("pointermove", onCanvasPointerMove);
   renderer.domElement.removeEventListener("pointerup", onCanvasPointerUp);
   renderer.domElement.removeEventListener("pointercancel", onCanvasPointerCancel);
+  renderer.domElement.removeEventListener("pointerleave", onCanvasPointerLeave);
   renderer.domElement.removeEventListener("wheel", onCanvasWheel);
+  renderer.domElement.removeEventListener("dblclick", onCanvasDoubleClick);
   stopVoidDrag();
   renderer.setAnimationLoop(null);
   controlPanel?.dispose();

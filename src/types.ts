@@ -40,8 +40,6 @@ export interface LookParams {
   sphereContrast: number;
   sphereRoughness: number;
   sphereMetalness: number;
-  haloOpacity: number;
-  haloSoftness: number;
   showTrails: boolean;
   feedbackTrail: boolean;
   feedbackDamp: number;

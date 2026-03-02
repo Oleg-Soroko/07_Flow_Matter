@@ -332,7 +332,7 @@ export function createControlPanel(
     </div>
     <div class="hint-row">
       <div id="fps-readout" class="fps-readout">FPS: --</div>
-      <div class="hint">Select: click | Move: drag | Radius: wheel or Shift-drag</div>
+      <div class="hint">Select: click | Move: drag | Radius: wheel or Shift-drag | Remove: middle click | Add: double click</div>
     </div>
   `;
 
@@ -1073,7 +1073,7 @@ export function createControlPanel(
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);
-  bindColor(lookBody, state.look, "sphereColor", "Sphere Color", callbacks.onLiveChange);
+  bindColor(lookBody, state.look, "sphereColor", "Material Color", callbacks.onLiveChange);
   bindRange(lookBody, state.look, "sphereBrightness", {
     label: "Sphere Brightness",
     min: 0,
@@ -1099,20 +1099,6 @@ export function createControlPanel(
     label: "Sphere Metalness",
     min: 0,
     max: 1,
-    step: 0.01,
-    precision: 2,
-  }, callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "haloOpacity", {
-    label: "Halo Opacity",
-    min: 0,
-    max: 1,
-    step: 0.01,
-    precision: 2,
-  }, callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "haloSoftness", {
-    label: "Halo Softness",
-    min: 0,
-    max: 1.5,
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);

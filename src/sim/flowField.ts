@@ -107,6 +107,9 @@ export const isInsideAnyVoid = (
   topology: TopologyParams,
 ): boolean => {
   for (const voidNode of layout.voids) {
+    if (!voidNode.active) {
+      continue;
+    }
     const radius = voidNode.baseRadius * topology.voidRadiusScale;
     const dx = x - voidNode.x;
     const dy = y - voidNode.y;
@@ -157,6 +160,9 @@ export const sampleField = (
   }
 
   for (const voidNode of layout.voids) {
+    if (!voidNode.active) {
+      continue;
+    }
     addVoidForce(out, x, y, phase, topology, voidNode);
   }
 

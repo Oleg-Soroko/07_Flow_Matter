@@ -69,7 +69,13 @@ const chooseWeightedSpawnBand = (bands: ReferenceSpawnBand[]): ReferenceSpawnBan
   return bands[bands.length - 1];
 };
 
-const chooseVoid = (voids: ReferenceVoid[]): ReferenceVoid => voids[Math.floor(Math.random() * voids.length)];
+const chooseVoid = (voids: ReferenceVoid[]): ReferenceVoid | null => {
+  const activeVoids = voids.filter((voidNode) => voidNode.active);
+  if (activeVoids.length === 0) {
+    return null;
+  }
+  return activeVoids[Math.floor(Math.random() * activeVoids.length)];
+};
 
 export class ParticleSystemRenderer {
   private readonly scene: Scene;
@@ -147,11 +153,12 @@ export class ParticleSystemRenderer {
       opacity: 1,
       blending: AdditiveBlending,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
     });
 
     this.pointsObject = new Points(this.pointsGeometry, this.pointsMaterial);
     this.pointsObject.frustumCulled = false;
+    this.pointsObject.renderOrder = 10;
     this.scene.add(this.pointsObject);
 
     this.headGeometry = new BufferGeometry();
@@ -169,10 +176,11 @@ export class ParticleSystemRenderer {
       opacity: look.headCircleOpacity,
       blending: AdditiveBlending,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
     });
     this.headObject = new Points(this.headGeometry, this.headMaterial);
     this.headObject.frustumCulled = false;
+    this.headObject.renderOrder = 11;
     this.scene.add(this.headObject);
 
     this.linesGeometry = new BufferGeometry();
@@ -185,11 +193,12 @@ export class ParticleSystemRenderer {
       opacity: look.lineOpacity,
       blending: AdditiveBlending,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
     });
 
     this.linesObject = new LineSegments(this.linesGeometry, this.linesMaterial);
     this.linesObject.frustumCulled = false;
+    this.linesObject.renderOrder = 9;
     this.scene.add(this.linesObject);
   }
 
@@ -404,11 +413,16 @@ export class ParticleSystemRenderer {
       y = point.y + randomRange(-band.width, band.width) * 0.25 + randomRange(-band.jitter, band.jitter);
     } else if (mode < 0.86) {
       const voidNode = chooseVoid(layout.voids);
-      const radius = voidNode.baseRadius * topology.voidRadiusScale;
-      const angle = Math.random() * Math.PI * 2;
-      const ring = radius * randomRange(1.1, 2.2);
-      x = voidNode.x + Math.cos(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter);
-      y = voidNode.y + Math.sin(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter);
+      if (voidNode) {
+        const radius = voidNode.baseRadius * topology.voidRadiusScale;
+        const angle = Math.random() * Math.PI * 2;
+        const ring = radius * randomRange(1.1, 2.2);
+        x = voidNode.x + Math.cos(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter);
+        y = voidNode.y + Math.sin(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter);
+      } else {
+        x = randomRange(-layout.halfWidth, layout.halfWidth);
+        y = randomRange(-layout.halfHeight, layout.halfHeight);
+      }
     } else {
       x = randomRange(-layout.halfWidth, layout.halfWidth);
       y = randomRange(-layout.halfHeight, layout.halfHeight);

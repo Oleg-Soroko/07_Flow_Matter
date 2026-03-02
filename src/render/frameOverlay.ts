@@ -1,61 +1,68 @@
 import {
   BufferAttribute,
   BufferGeometry,
-  CanvasTexture,
+  ClampToEdgeWrapping,
+  CircleGeometry,
   Color,
+  LinearFilter,
   LineBasicMaterial,
   LineLoop,
   Mesh,
   MeshStandardMaterial,
-  PlaneGeometry,
   Scene,
   SphereGeometry,
+  Texture,
+  TextureLoader,
 } from "three";
 import type { ReferenceLayout } from "../referenceLayout";
 import type { LookParams, TopologyParams } from "../types";
 
 export class FrameOverlay {
+  private static readonly UNDERLAY_OPACITY = 0.88;
   private readonly scene: Scene;
   private readonly layout: ReferenceLayout;
   private frameGeometry: BufferGeometry | null = null;
   private frameMaterial: LineBasicMaterial | null = null;
   private frameObject: LineLoop<BufferGeometry, LineBasicMaterial> | null = null;
-  private readonly underlayGeometry = new PlaneGeometry(2, 2, 1, 1);
-  private underlayTexture: CanvasTexture | null = null;
-  private readonly underlayMaterial = new MeshStandardMaterial({
-    color: 0x050505,
-    roughness: 0.94,
-    metalness: 0.04,
-    emissive: 0x020202,
-    emissiveIntensity: 0.08,
-    transparent: true,
-    opacity: 0.48,
-    depthWrite: false,
-    depthTest: false,
-  });
-  private underlaySoftness = 1;
-  private readonly underlayMeshes: Mesh<PlaneGeometry, MeshStandardMaterial>[] = [];
-  private readonly voidGeometry = new SphereGeometry(1, 36, 28);
+  private readonly underlayGeometry = new CircleGeometry(1, 96);
+  private readonly underlayMaskTexture: Texture;
+  private readonly underlayMaterial: MeshStandardMaterial;
+  private readonly underlayMeshes: Mesh<CircleGeometry, MeshStandardMaterial>[] = [];
   private readonly voidMaterial = new MeshStandardMaterial({
     color: 0x050505,
     roughness: 0.94,
     metalness: 0.04,
     emissive: 0x020202,
     emissiveIntensity: 0.08,
-    transparent: true,
-    opacity: 1,
-    depthWrite: false,
-    depthTest: false,
+    depthWrite: true,
+    depthTest: true,
   });
+  private readonly voidGeometries: SphereGeometry[] = [];
+  private readonly voidBasePositions: Float32Array[] = [];
   private readonly voidMeshes: Mesh<SphereGeometry, MeshStandardMaterial>[] = [];
+  private readonly activeBlend: number[] = [];
+  private readonly hoverPress: number[] = [];
   private selectionGeometry: BufferGeometry | null = null;
   private selectionMaterial: LineBasicMaterial | null = null;
   private selectionObject: LineLoop<BufferGeometry, LineBasicMaterial> | null = null;
   private selectedVoidIndex: number | null = null;
+  private hoveredVoidIndex: number | null = null;
 
   constructor(scene: Scene, layout: ReferenceLayout) {
     this.scene = scene;
     this.layout = layout;
+    this.underlayMaskTexture = new TextureLoader().load("/mask.png");
+    this.underlayMaskTexture.generateMipmaps = true;
+    this.underlayMaskTexture.minFilter = LinearFilter;
+    this.underlayMaskTexture.magFilter = LinearFilter;
+    this.underlayMaskTexture.wrapS = ClampToEdgeWrapping;
+    this.underlayMaskTexture.wrapT = ClampToEdgeWrapping;
+    this.underlayMaterial = this.voidMaterial.clone();
+    this.underlayMaterial.transparent = true;
+    this.underlayMaterial.opacity = FrameOverlay.UNDERLAY_OPACITY;
+    this.underlayMaterial.alphaMap = this.underlayMaskTexture;
+    this.underlayMaterial.depthWrite = true;
+    this.underlayMaterial.depthTest = true;
     this.buildFrame();
     this.buildVoids();
   }
@@ -71,27 +78,57 @@ export class FrameOverlay {
     this.underlayMaterial.roughness = look.sphereRoughness;
     this.underlayMaterial.metalness = look.sphereMetalness;
     this.underlayMaterial.emissive.copy(sphereColor);
-    this.underlayMaterial.emissiveIntensity = 0.01 + look.sphereBrightness * 0.028;
-    this.underlayMaterial.opacity = look.haloOpacity;
+    this.underlayMaterial.emissiveIntensity = 0.015 + look.sphereBrightness * 0.035;
+    this.underlayMaterial.opacity = FrameOverlay.UNDERLAY_OPACITY;
     this.voidMaterial.color.copy(sphereColor);
     this.voidMaterial.roughness = look.sphereRoughness;
     this.voidMaterial.metalness = look.sphereMetalness;
     this.voidMaterial.emissive.copy(sphereColor);
     this.voidMaterial.emissiveIntensity = 0.015 + look.sphereBrightness * 0.035;
 
-    if (!this.underlayTexture || Math.abs(this.underlaySoftness - look.haloSoftness) > 1e-4) {
-      this.refreshUnderlayTexture(look.haloSoftness);
-    }
-
     for (let i = 0; i < this.voidMeshes.length; i += 1) {
       const underlayMesh = this.underlayMeshes[i];
       const voidMesh = this.voidMeshes[i];
       const voidNode = this.layout.voids[i];
+      const targetBlend = voidNode.active ? 1 : 0;
+      const blend = this.activeBlend[i] + (targetBlend - this.activeBlend[i]) * 0.36;
+      this.activeBlend[i] = blend;
+      const blendEase = blend * blend * (3 - 2 * blend);
+
+      if (blendEase <= 0.002 && !voidNode.active) {
+        underlayMesh.visible = false;
+        voidMesh.visible = false;
+        this.hoverPress[i] *= 0.7;
+        continue;
+      }
+
+      underlayMesh.visible = true;
+      voidMesh.visible = true;
       const radius = voidNode.baseRadius * topology.voidRadiusScale;
-      underlayMesh.position.set(voidNode.x, voidNode.y, -0.02);
-      underlayMesh.scale.set(radius * 1.25, radius * 1.25, 1);
-      voidMesh.position.set(voidNode.x, voidNode.y, 0.08);
-      voidMesh.scale.set(radius, radius, radius);
+      const targetPress = blendEase > 0.08 && i === this.hoveredVoidIndex ? 1 : 0;
+      const press = this.hoverPress[i] + (targetPress - this.hoverPress[i]) * 0.18;
+      this.hoverPress[i] = press;
+      const spreadScale = 1 + press * 0.006;
+      const verticalScale = 1 - press * 0.08;
+      const collapse = 1 - blendEase;
+      const sink = press * 0.08 + collapse * 0.22;
+      const collapseWidth = 0.14 + blendEase * 0.86;
+      const collapseHeight = 0.08 + blendEase * 0.92;
+
+      this.updateVoidGeometry(i, press, collapse);
+
+      underlayMesh.position.set(voidNode.x, voidNode.y, -0.03 - sink * 0.3);
+      underlayMesh.scale.set(
+        radius * (1.25 + press * 0.11) * collapseWidth,
+        radius * (1.25 + press * 0.11) * collapseWidth,
+        1,
+      );
+      voidMesh.position.set(voidNode.x, voidNode.y, 0.08 - sink);
+      voidMesh.scale.set(
+        radius * spreadScale * collapseWidth,
+        radius * spreadScale * collapseWidth,
+        radius * verticalScale * collapseHeight,
+      );
     }
 
     if (this.selectionMaterial) {
@@ -104,10 +141,15 @@ export class FrameOverlay {
         this.selectionObject.visible = false;
       } else {
         const selectedVoid = this.layout.voids[this.selectedVoidIndex];
-        const radius = selectedVoid.baseRadius * topology.voidRadiusScale;
-        this.selectionObject.visible = true;
-        this.selectionObject.position.set(selectedVoid.x, selectedVoid.y, 0.04);
-        this.selectionObject.scale.set(radius + 0.05, radius + 0.05, 1);
+        const selectedBlend = this.activeBlend[this.selectedVoidIndex] ?? 0;
+        if (!selectedVoid.active || selectedBlend <= 0.08) {
+          this.selectionObject.visible = false;
+        } else {
+          const radius = selectedVoid.baseRadius * topology.voidRadiusScale;
+          this.selectionObject.visible = true;
+          this.selectionObject.position.set(selectedVoid.x, selectedVoid.y, 0.04);
+          this.selectionObject.scale.set(radius + 0.05, radius + 0.05, 1);
+        }
       }
     }
   }
@@ -117,6 +159,10 @@ export class FrameOverlay {
     if (this.selectionObject && index === null) {
       this.selectionObject.visible = false;
     }
+  }
+
+  setHoveredVoid(index: number | null): void {
+    this.hoveredVoidIndex = index;
   }
 
   dispose(): void {
@@ -142,9 +188,13 @@ export class FrameOverlay {
     this.underlayMeshes.length = 0;
     this.voidMeshes.length = 0;
     this.underlayGeometry.dispose();
-    this.underlayTexture?.dispose();
     this.underlayMaterial.dispose();
-    this.voidGeometry.dispose();
+    this.underlayMaskTexture.dispose();
+    for (const geometry of this.voidGeometries) {
+      geometry.dispose();
+    }
+    this.voidGeometries.length = 0;
+    this.voidBasePositions.length = 0;
     this.voidMaterial.dispose();
   }
 
@@ -179,8 +229,6 @@ export class FrameOverlay {
   }
 
   private buildVoids(): void {
-    this.refreshUnderlayTexture(this.underlaySoftness);
-
     for (const voidNode of this.layout.voids) {
       const underlayMesh = new Mesh(this.underlayGeometry, this.underlayMaterial);
       underlayMesh.position.set(voidNode.x, voidNode.y, -0.02);
@@ -189,8 +237,14 @@ export class FrameOverlay {
       underlayMesh.renderOrder = -10;
       this.scene.add(underlayMesh);
       this.underlayMeshes.push(underlayMesh);
+      this.activeBlend.push(voidNode.active ? 1 : 0);
+      this.hoverPress.push(0);
 
-      const mesh = new Mesh(this.voidGeometry, this.voidMaterial);
+      const geometry = new SphereGeometry(1, 36, 28);
+      this.voidGeometries.push(geometry);
+      this.voidBasePositions.push(new Float32Array(geometry.attributes.position.array as ArrayLike<number>));
+
+      const mesh = new Mesh(geometry, this.voidMaterial);
       mesh.position.set(voidNode.x, voidNode.y, 0.08);
       mesh.scale.set(voidNode.baseRadius, voidNode.baseRadius, voidNode.baseRadius);
       mesh.frustumCulled = false;
@@ -226,66 +280,37 @@ export class FrameOverlay {
     this.scene.add(this.selectionObject);
   }
 
-  private refreshUnderlayTexture(softness: number): void {
-    this.underlaySoftness = Math.max(0, Math.min(1.5, softness));
-    this.underlayTexture?.dispose();
-    this.underlayTexture = this.createUnderlayTextureForSoftness(this.underlaySoftness);
-    this.underlayMaterial.alphaMap = this.underlayTexture;
-    this.underlayMaterial.needsUpdate = true;
-  }
-
-  private createUnderlayTextureForSoftness(softness: number): CanvasTexture {
-    const size = 512;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Failed to create sphere underlay texture.");
-    }
-
-    context.clearRect(0, 0, size, size);
-
-    const imageData = context.createImageData(size, size);
-    const data = imageData.data;
-    const center = size * 0.5;
-    const softnessNorm = Math.max(0, Math.min(1, softness / 1.5));
-    const innerFalloffStart = 0.18 + softnessNorm * 0.10;
-    const outerFadeStart = 0.72 - softnessNorm * 0.16;
-    const outerRadius = 1.0;
-    const peakAlpha = 0.36 - softnessNorm * 0.08;
+  private updateVoidGeometry(index: number, press: number, collapse: number): void {
+    const geometry = this.voidGeometries[index];
+    const basePositions = this.voidBasePositions[index];
+    const positionAttribute = geometry.getAttribute("position");
+    const positions = positionAttribute.array as Float32Array;
 
     const smoothstep = (edge0: number, edge1: number, x: number): number => {
       const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(edge1 - edge0, 1e-5)));
       return t * t * (3 - 2 * t);
     };
 
-    for (let y = 0; y < size; y += 1) {
-      for (let x = 0; x < size; x += 1) {
-        const dx = (x + 0.5 - center) / center;
-        const dy = (y + 0.5 - center) / center;
-        const distance = Math.sqrt(dx * dx + dy * dy);
+    for (let i = 0; i < positions.length; i += 3) {
+      const baseX = basePositions[i];
+      const baseY = basePositions[i + 1];
+      const baseZ = basePositions[i + 2];
+      const radial = Math.sqrt(baseX * baseX + baseY * baseY);
+      const topMask = smoothstep(0.02, 0.92, baseZ);
+      const dentCore = Math.exp(-Math.pow(radial / 0.82, 2));
+      const dentRing = Math.exp(-Math.pow((radial - 0.72) / 0.28, 2));
+      const shoulderMask = smoothstep(0.15, 0.85, baseZ);
+      const centerDent = press * 0.62 * topMask * dentCore;
+      const rimLift = press * 0.095 * shoulderMask * dentRing;
+      const bodySink = press * 0.074 * smoothstep(-0.2, 0.95, baseZ) + collapse * 0.12 * smoothstep(-0.4, 1, baseZ);
+      const radialPull = 1 - press * 0.036 * topMask * dentCore - collapse * 0.08 * topMask;
 
-        let alpha = 0;
-        if (distance < outerRadius) {
-          const centerFade = 1 - smoothstep(0, innerFalloffStart, distance);
-          const edgeFade = 1 - smoothstep(outerFadeStart, outerRadius, distance);
-          alpha = Math.max(0, Math.min(1, Math.max(centerFade * 0.18, edgeFade) * peakAlpha));
-        }
-
-        const index = (y * size + x) * 4;
-        data[index] = 255;
-        data[index + 1] = 255;
-        data[index + 2] = 255;
-        data[index + 3] = Math.round(alpha * 255);
-      }
+      positions[i] = baseX * radialPull;
+      positions[i + 1] = baseY * radialPull;
+      positions[i + 2] = baseZ - centerDent + rimLift - bodySink;
     }
 
-    context.putImageData(imageData, 0, 0);
-
-    const texture = new CanvasTexture(canvas);
-    texture.generateMipmaps = false;
-    texture.needsUpdate = true;
-    return texture;
+    positionAttribute.needsUpdate = true;
+    geometry.computeVertexNormals();
   }
 }
