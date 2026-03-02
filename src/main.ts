@@ -5,15 +5,16 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { AfterimagePass } from "three/examples/jsm/postprocessing/AfterimagePass.js";
 import {
-  REFERENCE_LAYOUT_STORAGE_KEY,
   captureVoidLayout,
   createReferenceLayout,
+  getReferenceLayoutStorageKey,
   referenceDefaults,
   restoreVoidLayout,
 } from "./referenceLayout";
+import { FieldDebugOverlay } from "./render/fieldDebugOverlay";
 import { FrameOverlay } from "./render/frameOverlay";
 import { ParticleSystemRenderer } from "./sim/particleSystem";
-import type { FlowParams, FpsLimitMode, LookParams, RenderParams, TopologyParams, UiParams } from "./types";
+import type { AspectRatioMode, FlowParams, FpsLimitMode, LookParams, RenderParams, TopologyParams, UiParams } from "./types";
 import { createControlPanel, type ControlPanelApi } from "./ui/controls";
 
 function requireElement<T extends HTMLElement>(root: ParentNode, selector: string): T {
@@ -42,21 +43,22 @@ root.innerHTML = `
 
 const viewport = requireElement<HTMLDivElement>(root, "#viewport");
 const overlay = requireElement<HTMLDivElement>(root, "#overlay");
-const defaultLayout = createReferenceLayout();
-const layout = createReferenceLayout();
-restoreSavedLayout();
+let aspectRatioMode: AspectRatioMode = "portrait";
+let defaultLayout = createReferenceLayout(aspectRatioMode);
+let layout = createReferenceLayout(aspectRatioMode);
+restoreSavedLayout(aspectRatioMode, layout);
 
-function restoreSavedLayout(): void {
-  const raw = window.localStorage.getItem(REFERENCE_LAYOUT_STORAGE_KEY);
+function restoreSavedLayout(mode: AspectRatioMode, targetLayout: typeof layout): void {
+  const raw = window.localStorage.getItem(getReferenceLayoutStorageKey(mode));
   if (!raw) {
     return;
   }
 
   try {
     const parsed = JSON.parse(raw);
-    restoreVoidLayout(layout, parsed);
+    restoreVoidLayout(targetLayout, parsed);
   } catch {
-    window.localStorage.removeItem(REFERENCE_LAYOUT_STORAGE_KEY);
+    window.localStorage.removeItem(getReferenceLayoutStorageKey(mode));
   }
 }
 
@@ -98,13 +100,12 @@ rimLight.position.set(2.4, -1.6, 4.8);
 scene.add(ambientLight, hemiLight, keyLight, rimLight);
 
 const framePadding = 0.28;
-const baseHalfHeight = layout.halfHeight + framePadding;
 const initialAspect = window.innerWidth / Math.max(window.innerHeight, 1);
 const camera = new OrthographicCamera(
-  -baseHalfHeight * initialAspect,
-  baseHalfHeight * initialAspect,
-  baseHalfHeight,
-  -baseHalfHeight,
+  -1 * initialAspect,
+  1 * initialAspect,
+  1,
+  -1,
   0.01,
   50,
 );
@@ -139,7 +140,8 @@ controls.maxZoom = 1.9;
 controls.update();
 
 const particleSystem = new ParticleSystemRenderer(scene);
-const frameOverlay = new FrameOverlay(scene, layout);
+let frameOverlay = new FrameOverlay(scene, layout);
+let fieldDebugOverlay = new FieldDebugOverlay(scene, layout);
 let controlPanel: ControlPanelApi | null = null;
 const pointerWorld = new Vector3();
 
@@ -152,6 +154,19 @@ let dragOffsetY = 0;
 let dragStartRadius = 0;
 let dragStartInfluence = 0;
 let dragStartWorldY = 0;
+let pointerDownHitIndex: number | null = null;
+let pointerDownWasSelected = false;
+let pointerDownClientX = 0;
+let pointerDownClientY = 0;
+let pointerDidDrag = false;
+let hoverPressSuppressedVoidIndex: number | null = null;
+const pressedVoidIndices = new Set<number>();
+let latestElapsedSeconds = 0;
+
+const getAspectFrameSize = (mode: AspectRatioMode): { width: number; height: number } => {
+  const previewLayout = mode === aspectRatioMode ? layout : createReferenceLayout(mode);
+  return { width: previewLayout.frameWidth, height: previewLayout.frameHeight };
+};
 
 const getFpsFrameIntervalMs = (mode: FpsLimitMode): number => {
   if (mode === "unlimited") {
@@ -161,12 +176,18 @@ const getFpsFrameIntervalMs = (mode: FpsLimitMode): number => {
 };
 
 const updateCameraFrustum = (): void => {
-  const aspect = window.innerWidth / Math.max(window.innerHeight, 1);
-  camera.left = -baseHalfHeight * aspect;
-  camera.right = baseHalfHeight * aspect;
-  camera.top = baseHalfHeight;
-  camera.bottom = -baseHalfHeight;
+  const viewportAspect = window.innerWidth / Math.max(window.innerHeight, 1);
+  const frameSize = getAspectFrameSize(aspectRatioMode);
+  const paddedHalfWidth = frameSize.width * 0.5 + framePadding;
+  const paddedHalfHeight = frameSize.height * 0.5 + framePadding;
+  const cameraHalfHeight = Math.max(paddedHalfHeight, paddedHalfWidth / Math.max(viewportAspect, 1e-5));
+
+  camera.left = -cameraHalfHeight * viewportAspect;
+  camera.right = cameraHalfHeight * viewportAspect;
+  camera.top = cameraHalfHeight;
+  camera.bottom = -cameraHalfHeight;
   camera.updateProjectionMatrix();
+  frameOverlay.setFrameSize(frameSize.width, frameSize.height);
 };
 
 const setSelectedVoid = (index: number | null): void => {
@@ -228,14 +249,16 @@ const findVoidAtWorld = (worldX: number, worldY: number): number | null => {
 };
 
 const saveLayoutToStorage = (): void => {
-  window.localStorage.setItem(REFERENCE_LAYOUT_STORAGE_KEY, JSON.stringify(captureVoidLayout(layout)));
+  window.localStorage.setItem(getReferenceLayoutStorageKey(aspectRatioMode), JSON.stringify(captureVoidLayout(layout)));
   controlPanel?.setStatus("Layout saved.");
 };
 
 const resetLayoutToDefault = (): void => {
   restoreVoidLayout(layout, captureVoidLayout(defaultLayout));
+  pressedVoidIndices.clear();
+  frameOverlay.clearPressedVoids();
   setSelectedVoid(null);
-  window.localStorage.removeItem(REFERENCE_LAYOUT_STORAGE_KEY);
+  window.localStorage.removeItem(getReferenceLayoutStorageKey(aspectRatioMode));
   rebuildSimulation();
   controlPanel?.setStatus("Layout reset.");
 };
@@ -261,6 +284,7 @@ const applyLookSettings = (): void => {
 const applyRenderSettings = (): void => {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, renderParams.pixelRatioCap));
   composer.setPixelRatio(Math.min(window.devicePixelRatio, renderParams.pixelRatioCap));
+  fieldDebugOverlay.setVisible(renderParams.showFieldDebug);
 };
 
 const rebuildSimulation = (): void => {
@@ -270,9 +294,37 @@ const rebuildSimulation = (): void => {
   controlPanel?.setStatus("Reference field rebuilt.");
 };
 
+const applyAspectRatioMode = (mode: AspectRatioMode): void => {
+  aspectRatioMode = mode;
+  defaultLayout = createReferenceLayout(mode);
+  layout = createReferenceLayout(mode);
+  restoreSavedLayout(mode, layout);
+
+  pressedVoidIndices.clear();
+  if (frameOverlay) {
+    frameOverlay.dispose();
+  }
+  if (fieldDebugOverlay) {
+    fieldDebugOverlay.dispose();
+  }
+  frameOverlay = new FrameOverlay(scene, layout);
+  fieldDebugOverlay = new FieldDebugOverlay(scene, layout);
+  selectedVoidIndex = null;
+  hoveredVoidIndex = null;
+  hoverPressSuppressedVoidIndex = null;
+  pointerDownHitIndex = null;
+  pointerDownWasSelected = false;
+  pointerDidDrag = false;
+
+  updateCameraFrustum();
+  applyRenderSettings();
+  rebuildSimulation();
+};
+
 controlPanel = createControlPanel(
   overlay,
   {
+    aspectRatioMode,
     flow: flowParams,
     topology: topologyParams,
     look: lookParams,
@@ -280,6 +332,11 @@ controlPanel = createControlPanel(
     ui: uiParams,
   },
   {
+    onAspectRatioChange: (mode): void => {
+      applyAspectRatioMode(mode);
+      composer.reset();
+      controlPanel?.setStatus(mode === "portrait" ? "Portrait format." : mode === "square" ? "Square format." : "Landscape format.");
+    },
     onLiveChange: (): void => {
       applyLookSettings();
       applyRenderSettings();
@@ -326,21 +383,29 @@ const applyVoidRadius = (voidIndex: number, nextRadius: number): void => {
 };
 
 const onCanvasPointerDown = (event: PointerEvent): void => {
-  if (event.button !== 0 && event.button !== 1) {
+  if (event.button !== 0 && event.button !== 1 && event.button !== 2) {
     return;
   }
 
   const world = getPointerWorld(event.clientX, event.clientY);
   const hitIndex = findVoidAtWorld(world.x, world.y);
   if (hitIndex === null) {
+    pointerDownHitIndex = null;
+    pointerDownWasSelected = false;
+    pointerDidDrag = false;
+    hoverPressSuppressedVoidIndex = null;
+    frameOverlay.suppressHoveredVoid(null);
     setSelectedVoid(null);
     setHoveredVoid(null);
     return;
   }
 
   event.preventDefault();
-  if (event.button === 1) {
+  if (event.button === 2) {
     layout.voids[hitIndex].active = false;
+    layout.voids[hitIndex].emitter = false;
+    pressedVoidIndices.delete(hitIndex);
+    frameOverlay.setPressedVoid(hitIndex, false);
     if (selectedVoidIndex === hitIndex) {
       setSelectedVoid(null);
     }
@@ -350,7 +415,38 @@ const onCanvasPointerDown = (event: PointerEvent): void => {
     return;
   }
 
+  if (event.button === 1) {
+    const voidNode = layout.voids[hitIndex];
+    voidNode.emitter = !voidNode.emitter;
+    setSelectedVoid(hitIndex);
+    setHoveredVoid(hitIndex);
+    updateEditedVoid();
+    if (voidNode.emitter) {
+      particleSystem.seedEmitterBurst(
+        hitIndex,
+        Math.max(24, Math.round(flowParams.particleCount * 0.08)),
+        flowParams,
+        topologyParams,
+        lookParams,
+        latestElapsedSeconds,
+      );
+    }
+    controlPanel?.setStatus(
+      voidNode.emitter
+        ? `Void ${hitIndex + 1} set as emitter.`
+        : `Void ${hitIndex + 1} emitter disabled.`,
+    );
+    return;
+  }
+
+  pointerDownHitIndex = hitIndex;
+  pointerDownWasSelected = pressedVoidIndices.has(hitIndex);
+  pointerDownClientX = event.clientX;
+  pointerDownClientY = event.clientY;
+  pointerDidDrag = false;
   setSelectedVoid(hitIndex);
+  hoverPressSuppressedVoidIndex = null;
+  frameOverlay.suppressHoveredVoid(null);
   setHoveredVoid(hitIndex);
   activePointerId = event.pointerId;
   dragMode = event.shiftKey ? "radius" : "move";
@@ -370,10 +466,22 @@ const onCanvasPointerDown = (event: PointerEvent): void => {
 const onCanvasPointerMove = (event: PointerEvent): void => {
   const world = getPointerWorld(event.clientX, event.clientY);
   const hitIndex = findVoidAtWorld(world.x, world.y);
+  if (hoverPressSuppressedVoidIndex !== null && hitIndex !== hoverPressSuppressedVoidIndex) {
+    hoverPressSuppressedVoidIndex = null;
+    frameOverlay.suppressHoveredVoid(null);
+  }
   setHoveredVoid(hitIndex);
 
   if (activePointerId === null || event.pointerId !== activePointerId || selectedVoidIndex === null || dragMode === null) {
     return;
+  }
+
+  if (!pointerDidDrag) {
+    const deltaX = event.clientX - pointerDownClientX;
+    const deltaY = event.clientY - pointerDownClientY;
+    if ((deltaX * deltaX) + (deltaY * deltaY) > 16) {
+      pointerDidDrag = true;
+    }
   }
 
   const voidNode = layout.voids[selectedVoidIndex];
@@ -414,10 +522,46 @@ const stopVoidDrag = (pointerId?: number): void => {
   );
 };
 
-const onCanvasPointerUp = (event: PointerEvent): void => stopVoidDrag(event.pointerId);
+const onCanvasPointerUp = (event: PointerEvent): void => {
+  let clickStatus: string | null = null;
+
+  if (activePointerId !== null && event.pointerId === activePointerId) {
+    const world = getPointerWorld(event.clientX, event.clientY);
+    const hitIndex = findVoidAtWorld(world.x, world.y);
+
+    if (!pointerDidDrag && pointerDownHitIndex !== null && hitIndex === pointerDownHitIndex) {
+      if (pointerDownWasSelected) {
+        pressedVoidIndices.delete(pointerDownHitIndex);
+        frameOverlay.setPressedVoid(pointerDownHitIndex, false);
+        hoverPressSuppressedVoidIndex = pointerDownHitIndex;
+        frameOverlay.suppressHoveredVoid(pointerDownHitIndex);
+        frameOverlay.releasePressInstant(pointerDownHitIndex);
+        setSelectedVoid(null);
+        clickStatus = `Void ${pointerDownHitIndex + 1} released.`;
+      } else {
+        pressedVoidIndices.add(pointerDownHitIndex);
+        frameOverlay.setPressedVoid(pointerDownHitIndex, true);
+        hoverPressSuppressedVoidIndex = null;
+        frameOverlay.suppressHoveredVoid(null);
+        setSelectedVoid(pointerDownHitIndex);
+        clickStatus = `Void ${pointerDownHitIndex + 1} pressed.`;
+      }
+    }
+  }
+
+  pointerDownHitIndex = null;
+  pointerDownWasSelected = false;
+  pointerDidDrag = false;
+  stopVoidDrag(event.pointerId);
+  if (clickStatus) {
+    controlPanel?.setStatus(clickStatus);
+  }
+};
 const onCanvasPointerCancel = (event: PointerEvent): void => stopVoidDrag(event.pointerId);
 const onCanvasPointerLeave = (): void => {
   if (activePointerId === null) {
+    hoverPressSuppressedVoidIndex = null;
+    frameOverlay.suppressHoveredVoid(null);
     setHoveredVoid(null);
   }
 };
@@ -463,10 +607,17 @@ const onCanvasDoubleClick = (event: MouseEvent): void => {
   voidNode.x = clampVoidPosition(world.x, layout.halfWidth - margin);
   voidNode.y = clampVoidPosition(world.y, layout.halfHeight - margin);
   voidNode.active = true;
+  voidNode.emitter = false;
+  pressedVoidIndices.delete(inactiveIndex);
+  frameOverlay.setPressedVoid(inactiveIndex, false);
   setSelectedVoid(inactiveIndex);
   setHoveredVoid(inactiveIndex);
   updateEditedVoid();
   controlPanel?.setStatus(`Void ${inactiveIndex + 1} added. Save layout if needed.`);
+};
+
+const onCanvasContextMenu = (event: MouseEvent): void => {
+  event.preventDefault();
 };
 
 renderer.domElement.addEventListener("pointerdown", onCanvasPointerDown);
@@ -476,6 +627,7 @@ renderer.domElement.addEventListener("pointercancel", onCanvasPointerCancel);
 renderer.domElement.addEventListener("pointerleave", onCanvasPointerLeave);
 renderer.domElement.addEventListener("wheel", onCanvasWheel, { passive: false });
 renderer.domElement.addEventListener("dblclick", onCanvasDoubleClick);
+renderer.domElement.addEventListener("contextmenu", onCanvasContextMenu);
 
 let lastRenderedTimestampMs = 0;
 let smoothedFps = 60;
@@ -494,6 +646,7 @@ renderer.setAnimationLoop((timestampMs: number) => {
   lastRenderedTimestampMs = timestampMs;
   const deltaSeconds = deltaMs / 1000;
   const elapsedSeconds = timestampMs / 1000;
+  latestElapsedSeconds = elapsedSeconds;
 
   smoothedFps += ((1000 / deltaMs) - smoothedFps) * 0.15;
   controlPanel?.setFps(smoothedFps);
@@ -501,6 +654,7 @@ renderer.setAnimationLoop((timestampMs: number) => {
   controls.update();
   particleSystem.update(deltaSeconds, elapsedSeconds, flowParams, topologyParams, lookParams);
   frameOverlay.update(lookParams, topologyParams);
+  fieldDebugOverlay.update(elapsedSeconds, flowParams, topologyParams);
   if (lookParams.feedbackTrail) {
     composer.render();
   } else {
@@ -522,6 +676,7 @@ const dispose = (): void => {
   controlPanel?.dispose();
   particleSystem.dispose();
   frameOverlay.dispose();
+  fieldDebugOverlay.dispose();
   controls.dispose();
   composer.dispose();
   renderer.dispose();

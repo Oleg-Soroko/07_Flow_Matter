@@ -1,4 +1,4 @@
-import type { FlowParams, LookParams, RenderParams, TopologyParams } from "./types";
+import type { AspectRatioMode, FlowParams, LookParams, RenderParams, TopologyParams } from "./types";
 
 export interface ReferencePoint {
   x: number;
@@ -42,6 +42,7 @@ export interface ReferenceVoid {
   influence: number;
   spin: number;
   active: boolean;
+  emitter: boolean;
 }
 
 export interface ReferenceChannel {
@@ -83,15 +84,22 @@ export interface SavedReferenceVoid {
   baseRadius: number;
   influence: number;
   active: boolean;
+  emitter: boolean;
 }
 
 export interface SavedReferenceLayout {
   voids: SavedReferenceVoid[];
 }
 
-export const REFERENCE_FRAME_WIDTH = 4;
-export const REFERENCE_FRAME_HEIGHT = 7;
-export const REFERENCE_LAYOUT_STORAGE_KEY = "vectorfields.reference-layout.v1";
+export const PORTRAIT_FRAME_WIDTH = 4;
+export const PORTRAIT_FRAME_HEIGHT = 7;
+export const REFERENCE_LAYOUT_STORAGE_KEY = "vectorfields.reference-layout.v2";
+
+interface AspectLayoutSpec {
+  frameWidth: number;
+  frameHeight: number;
+  pointTransform(point: ReferencePoint): ReferencePoint;
+}
 
 const frameRectNormalized: ReferenceFrameRect = {
   x: 0,
@@ -99,6 +107,59 @@ const frameRectNormalized: ReferenceFrameRect = {
   width: 1,
   height: 1,
 };
+
+const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+const smoothstep = (edge0: number, edge1: number, x: number): number => {
+  const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(edge1 - edge0, 1e-5)));
+  return t * t * (3 - 2 * t);
+};
+
+const getAspectLayoutSpec = (mode: AspectRatioMode): AspectLayoutSpec => {
+  if (mode === "square") {
+    return {
+      frameWidth: 6,
+      frameHeight: 6,
+      pointTransform(point) {
+        const centeredX = point.x - 0.5;
+        const centeredY = point.y - 0.5;
+        const topFan = smoothstep(0.46, 0.98, point.y);
+        return {
+          x: clamp01(0.5 + centeredX * 1.52 + Math.sign(centeredX || 1) * topFan * 0.05),
+          y: clamp01(0.5 + centeredY * 0.9),
+        };
+      },
+    };
+  }
+
+  if (mode === "landscape") {
+    return {
+      frameWidth: 10.6666666667,
+      frameHeight: 6,
+      pointTransform(point) {
+        const centeredX = point.x - 0.5;
+        const centeredY = point.y - 0.5;
+        const topFan = smoothstep(0.4, 0.98, point.y);
+        const sideArc = Math.sin((point.y - 0.18) * Math.PI * 1.4) * 0.024;
+        return {
+          x: clamp01(0.5 + centeredX * 2.18 + Math.sign(centeredX || 1) * topFan * 0.08 + sideArc * Math.sign(centeredX || 1)),
+          y: clamp01(0.5 + centeredY * 0.68),
+        };
+      },
+    };
+  }
+
+  return {
+    frameWidth: PORTRAIT_FRAME_WIDTH,
+    frameHeight: PORTRAIT_FRAME_HEIGHT,
+    pointTransform(point) {
+      return { x: point.x, y: point.y };
+    },
+  };
+};
+
+export const getReferenceLayoutStorageKey = (mode: AspectRatioMode): string =>
+  `${REFERENCE_LAYOUT_STORAGE_KEY}.${mode}`;
 
 const voidsNormalized: ReferenceVoidNormalized[] = [
   { x: 0.15, y: 0.89, radius: 0.033, influence: 0.12, spin: 1 },
@@ -265,6 +326,7 @@ const spawnBandsNormalized: ReferenceSpawnBandNormalized[] = channelsNormalized.
 
 export const referenceDefaults: ReferenceDefaults = {
   flow: {
+    spawnPreset: "side-fed",
     particleCount: 2000,
     trailLength: 128,
     integrationStep: 0.009,
@@ -280,17 +342,20 @@ export const referenceDefaults: ReferenceDefaults = {
     ringWidth: 0.076,
     channelPull: 0.38,
     channelFlow: 0.33,
+    channelSmoothness: 0.68,
     sideInflow: 1.67,
     spineStrength: 0.66,
     edgeFade: 0.51,
     backgroundCurl: 0.48,
-    backgroundNoiseScale: 0.34,
-    backgroundNoiseSpeed: 3,
+    backgroundNoiseScale: 0.98,
+    backgroundNoiseSpeed: 0,
+    backgroundNoiseRoughness: 0.18,
   },
   look: {
     backgroundColor: "#000000",
     lineColor: "#575757",
     frameColor: "#ffffff",
+    frameBevel: 0.18,
     headCircleColor: "#f0f0f0",
     showHeadCircles: true,
     headCircleSize: 2.1,
@@ -314,6 +379,7 @@ export const referenceDefaults: ReferenceDefaults = {
   render: {
     pixelRatioCap: 1,
     fpsLimit: "unlimited",
+    showFieldDebug: false,
   },
 };
 
@@ -323,11 +389,14 @@ const toWorldPoint = (point: ReferencePoint, frameWidth: number, frameHeight: nu
 });
 
 export const createReferenceLayout = (
-  frameWidth = REFERENCE_FRAME_WIDTH,
-  frameHeight = REFERENCE_FRAME_HEIGHT,
+  mode: AspectRatioMode = "portrait",
 ): ReferenceLayout => {
+  const spec = getAspectLayoutSpec(mode);
+  const frameWidth = spec.frameWidth;
+  const frameHeight = spec.frameHeight;
   const halfWidth = frameWidth * 0.5;
   const halfHeight = frameHeight * 0.5;
+  const scaleUnit = mode === "portrait" ? frameWidth : Math.min(frameWidth, frameHeight);
 
   return {
     frameRect: { ...frameRectNormalized },
@@ -336,25 +405,31 @@ export const createReferenceLayout = (
     halfWidth,
     halfHeight,
     voids: voidsNormalized.map((item) => ({
-      x: (item.x - 0.5) * frameWidth,
-      y: (0.5 - item.y) * frameHeight,
-      baseRadius: item.radius * frameWidth,
-      influence: item.influence * frameWidth,
+      ...(() => {
+        const point = spec.pointTransform({ x: item.x, y: item.y });
+        return {
+          x: (point.x - 0.5) * frameWidth,
+          y: (0.5 - point.y) * frameHeight,
+        };
+      })(),
+      baseRadius: item.radius * scaleUnit,
+      influence: item.influence * scaleUnit,
       spin: item.spin,
       active: true,
+      emitter: false,
     })),
     channels: channelsNormalized.map((item) => ({
-      points: item.points.map((point) => toWorldPoint(point, frameWidth, frameHeight)),
-      radius: item.radius * frameWidth,
+      points: item.points.map((point) => toWorldPoint(spec.pointTransform(point), frameWidth, frameHeight)),
+      radius: item.radius * scaleUnit,
       pull: item.pull,
       flow: item.flow,
       phase: item.phase,
     })),
     spawnBands: spawnBandsNormalized.map((item) => ({
-      points: item.points.map((point) => toWorldPoint(point, frameWidth, frameHeight)),
-      width: item.width * frameWidth,
+      points: item.points.map((point) => toWorldPoint(spec.pointTransform(point), frameWidth, frameHeight)),
+      width: item.width * scaleUnit,
       weight: item.weight,
-      jitter: item.jitter * frameWidth,
+      jitter: item.jitter * scaleUnit,
     })),
   };
 };
@@ -366,6 +441,7 @@ export const captureVoidLayout = (layout: ReferenceLayout): SavedReferenceLayout
     baseRadius: item.baseRadius,
     influence: item.influence,
     active: item.active,
+    emitter: item.emitter,
   })),
 });
 
@@ -391,6 +467,7 @@ export const restoreVoidLayout = (layout: ReferenceLayout, saved: SavedReference
     target.baseRadius = source.baseRadius;
     target.influence = source.influence;
     target.active = typeof source.active === "boolean" ? source.active : true;
+    target.emitter = typeof source.emitter === "boolean" ? source.emitter : false;
   }
 
   return true;

@@ -1,7 +1,10 @@
 export type FpsLimitMode = "30" | "60" | "unlimited";
+export type SpawnPresetMode = "balanced" | "side-fed";
 export type UiDepthMode = "soft" | "medium" | "deep";
+export type AspectRatioMode = "portrait" | "square" | "landscape";
 
 export interface FlowParams {
+  spawnPreset: SpawnPresetMode;
   particleCount: number;
   trailLength: number;
   integrationStep: number;
@@ -18,18 +21,21 @@ export interface TopologyParams {
   ringWidth: number;
   channelPull: number;
   channelFlow: number;
+  channelSmoothness: number;
   sideInflow: number;
   spineStrength: number;
   edgeFade: number;
   backgroundCurl: number;
   backgroundNoiseScale: number;
   backgroundNoiseSpeed: number;
+  backgroundNoiseRoughness: number;
 }
 
 export interface LookParams {
   backgroundColor: string;
   lineColor: string;
   frameColor: string;
+  frameBevel: number;
   headCircleColor: string;
   showHeadCircles: boolean;
   headCircleSize: number;
@@ -54,6 +60,7 @@ export interface LookParams {
 export interface RenderParams {
   pixelRatioCap: number;
   fpsLimit: FpsLimitMode;
+  showFieldDebug: boolean;
 }
 
 export interface UiParams {

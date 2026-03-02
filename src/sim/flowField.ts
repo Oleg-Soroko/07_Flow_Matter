@@ -9,6 +9,13 @@ export interface MutableVec2 {
 const LOOP_DURATION_SECONDS = 0.6;
 const TAU = Math.PI * 2;
 
+const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+const smoothstep = (edge0: number, edge1: number, x: number): number => {
+  const t = clamp01((x - edge0) / Math.max(edge1 - edge0, 1e-5));
+  return t * t * (3 - 2 * t);
+};
+
 const pointSegmentNearest = (
   px: number,
   py: number,
@@ -39,10 +46,16 @@ const nearestPointOnChannel = (
   y: number,
   nearest: MutableVec2,
   tangent: MutableVec2,
+  smoothness: number,
 ): number => {
   let bestDistanceSq = Number.POSITIVE_INFINITY;
   const testNearest = { x: 0, y: 0 };
   const testTangent = { x: 0, y: 0 };
+  const smoothedNearest = { x: 0, y: 0 };
+  const smoothedTangent = { x: 0, y: 0 };
+  let blendWeightTotal = 0;
+  const blendRadius = Math.max(1e-4, channel.radius * (0.38 + smoothness * 1.65));
+  const blendRadiusSq = blendRadius * blendRadius;
 
   for (let i = 0; i < channel.points.length - 1; i += 1) {
     const a = channel.points[i];
@@ -55,6 +68,27 @@ const nearestPointOnChannel = (
       tangent.x = testTangent.x;
       tangent.y = testTangent.y;
     }
+
+    const blendWeight = Math.exp(-distanceSq / blendRadiusSq);
+    smoothedNearest.x += testNearest.x * blendWeight;
+    smoothedNearest.y += testNearest.y * blendWeight;
+    smoothedTangent.x += testTangent.x * blendWeight;
+    smoothedTangent.y += testTangent.y * blendWeight;
+    blendWeightTotal += blendWeight;
+  }
+
+  if (blendWeightTotal > 1e-5) {
+    const blendMix = clamp01(smoothness);
+    const averagedNearestX = smoothedNearest.x / blendWeightTotal;
+    const averagedNearestY = smoothedNearest.y / blendWeightTotal;
+    const averagedTangentX = smoothedTangent.x / blendWeightTotal;
+    const averagedTangentY = smoothedTangent.y / blendWeightTotal;
+    const averagedTangentLength = Math.hypot(averagedTangentX, averagedTangentY) || 1;
+
+    nearest.x += (averagedNearestX - nearest.x) * blendMix;
+    nearest.y += (averagedNearestY - nearest.y) * blendMix;
+    tangent.x += ((averagedTangentX / averagedTangentLength) - tangent.x) * blendMix;
+    tangent.y += ((averagedTangentY / averagedTangentLength) - tangent.y) * blendMix;
   }
 
   return Math.sqrt(bestDistanceSq);
@@ -144,19 +178,23 @@ export const sampleField = (
   const phase = TAU * (timeSeconds / LOOP_DURATION_SECONDS) * flow.loopSpeed;
   const channelNearest = { x: 0, y: 0 };
   const channelTangent = { x: 0, y: 0 };
+  let channelCoverage = 0;
 
   for (const channel of layout.channels) {
-    const distance = nearestPointOnChannel(channel, x, y, channelNearest, channelTangent);
-    const radius = Math.max(0.08, channel.radius);
+    const smoothness = clamp01(topology.channelSmoothness);
+    const distance = nearestPointOnChannel(channel, x, y, channelNearest, channelTangent, smoothness);
+    const radius = Math.max(0.08, channel.radius) * (1 + smoothness * 0.95);
     const weight = Math.exp(-(distance * distance) / (radius * radius));
-    const mod = 1 + Math.sin(phase + channel.phase) * flow.loopAmount * 0.28;
+    const smoothWeight = Math.pow(weight, 1.06 - smoothness * 0.52);
+    const mod = 1 + Math.sin(phase + channel.phase) * flow.loopAmount * 0.14;
     const dx = channelNearest.x - x;
     const dy = channelNearest.y - y;
 
-    out.x += dx * topology.channelPull * channel.pull * weight * 0.72;
-    out.y += dy * topology.channelPull * channel.pull * weight * 0.72;
-    out.x += channelTangent.x * topology.channelFlow * channel.flow * weight * mod;
-    out.y += channelTangent.y * topology.channelFlow * channel.flow * weight * mod;
+    out.x += dx * topology.channelPull * channel.pull * smoothWeight * 0.66;
+    out.y += dy * topology.channelPull * channel.pull * smoothWeight * 0.66;
+    out.x += channelTangent.x * topology.channelFlow * channel.flow * smoothWeight * mod;
+    out.y += channelTangent.y * topology.channelFlow * channel.flow * smoothWeight * mod;
+    channelCoverage = 1 - (1 - channelCoverage) * (1 - clamp01(smoothWeight * 0.44));
   }
 
   for (const voidNode of layout.voids) {
@@ -167,30 +205,60 @@ export const sampleField = (
   }
 
   const sideRatio = Math.abs(x) / Math.max(layout.halfWidth, 1e-5);
-  const sideBand = Math.max(0, sideRatio - 0.38) / 0.62;
-  const sideWeight = sideBand * sideBand;
+  const sideWeight = smoothstep(0.28, 0.96, sideRatio);
   const sideMod = 0.82 + 0.18 * Math.cos(y * 1.4 - phase * 0.07);
-  out.x += -Math.sign(x || 1) * topology.sideInflow * sideWeight * sideMod;
+  out.x += -(x / Math.max(layout.halfWidth, 1e-5)) * topology.sideInflow * sideWeight * sideMod;
 
   const spineWeight = Math.exp(-(x * x) / Math.max(1e-5, layout.frameWidth * 0.12));
   out.x += -x * topology.spineStrength * spineWeight * 0.45;
   out.y += -y * topology.spineStrength * spineWeight * 0.08;
 
-  const edgeBandX = Math.max(0, Math.abs(x) - layout.halfWidth * 0.78) / Math.max(layout.halfWidth * 0.22, 1e-5);
-  const edgeBandY = Math.max(0, Math.abs(y) - layout.halfHeight * 0.84) / Math.max(layout.halfHeight * 0.16, 1e-5);
-  out.x += -Math.sign(x || 1) * edgeBandX * edgeBandX * topology.edgeFade * 0.85;
-  out.y += -Math.sign(y || 1) * edgeBandY * edgeBandY * topology.edgeFade * 0.85;
+  const edgeBandX = smoothstep(layout.halfWidth * 0.72, layout.halfWidth * 0.99, Math.abs(x));
+  const edgeBandY = smoothstep(layout.halfHeight * 0.8, layout.halfHeight * 0.99, Math.abs(y));
+  const topBand = smoothstep(layout.halfHeight * 0.35, layout.halfHeight * 0.98, y);
+  out.x += -(x / Math.max(layout.halfWidth, 1e-5)) * edgeBandX * topology.edgeFade * 0.85;
+  out.y += -(y / Math.max(layout.halfHeight, 1e-5)) * edgeBandY * topology.edgeFade * 0.85;
+
+  const bottomBand = 1 - smoothstep(-layout.halfHeight * 0.86, -layout.halfHeight * 0.42, y);
+  const bottomCenter = 1 - smoothstep(layout.frameWidth * 0.14, layout.frameWidth * 0.38, Math.abs(x));
+  const outletWeight = bottomBand * bottomCenter;
+  if (outletWeight > 0) {
+    const splitX = x / Math.max(layout.frameWidth * 0.12, 1e-5);
+    const lateralOut = Math.tanh(splitX) * (0.34 + topology.channelFlow * 0.42);
+    const downwardOut = 0.62 + topology.edgeFade * 0.46;
+    out.x += lateralOut * outletWeight;
+    out.y += -downwardOut * outletWeight;
+  }
 
   const noiseScale = Math.max(0.2, topology.backgroundNoiseScale);
   const noisePhase = phase * Math.max(0, topology.backgroundNoiseSpeed);
-  const curlA =
-    Math.sin(y * 2.15 * noiseScale + noisePhase * 0.12) +
-    0.45 * Math.sin((x + y) * 2.9 * noiseScale - noisePhase * 0.08);
-  const curlB =
-    Math.cos(x * 2.35 * noiseScale - noisePhase * 0.11) +
-    0.45 * Math.cos((x - y) * 2.55 * noiseScale + noisePhase * 0.09);
-  out.x += topology.backgroundCurl * curlA * 0.22;
-  out.y += topology.backgroundCurl * curlB * 0.22;
+  const roughness = clamp01(topology.backgroundNoiseRoughness);
+  const protectedFieldWeight = clamp01(channelCoverage + spineWeight * 0.24);
+  const openFieldWeight = 1 - smoothstep(0.08, 0.86, protectedFieldWeight);
+  const detailScale = noiseScale * (1.18 + roughness * 2.6);
+  const detailAmount = 0.06 + roughness * 0.22;
+  const macroAmount = 0.42 - roughness * 0.14;
+  const detailPhase = noisePhase * (0.42 + roughness * 0.64);
+  const macroPhase = noisePhase * 0.12;
+
+  const detailCurlA =
+    Math.sin(y * 1.85 * detailScale + detailPhase) +
+    0.42 * Math.sin((x + y * 0.85) * 2.05 * detailScale - detailPhase * 0.78);
+  const detailCurlB =
+    Math.cos(x * 1.9 * detailScale - detailPhase) +
+    0.42 * Math.cos((x * 0.82 - y) * 1.95 * detailScale + detailPhase * 0.82);
+
+  const macroScale = Math.max(0.1, noiseScale * 0.44);
+  const macroCurlA =
+    Math.sin(y * 0.62 * macroScale + macroPhase) +
+    0.34 * Math.sin((x + y) * 0.88 * macroScale - macroPhase * 0.5);
+  const macroCurlB =
+    Math.cos(x * 0.67 * macroScale - macroPhase) +
+    0.34 * Math.cos((x - y) * 0.92 * macroScale + macroPhase * 0.54);
+
+  const outerBoost = openFieldWeight * (0.74 + sideWeight * 0.42 + topBand * 0.3);
+  out.x += topology.backgroundCurl * outerBoost * (macroCurlA * macroAmount + detailCurlA * detailAmount);
+  out.y += topology.backgroundCurl * outerBoost * (macroCurlB * macroAmount + detailCurlB * detailAmount);
 
   const length = Math.hypot(out.x, out.y);
   if (length > 4) {

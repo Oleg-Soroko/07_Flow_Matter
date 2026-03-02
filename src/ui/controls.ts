@@ -1,6 +1,7 @@
-import type { FlowParams, FpsLimitMode, LookParams, RenderParams, TopologyParams, UiParams } from "../types";
+import type { AspectRatioMode, FlowParams, FpsLimitMode, LookParams, RenderParams, TopologyParams, UiParams } from "../types";
 
 export interface ControlPanelState {
+  aspectRatioMode: AspectRatioMode;
   flow: FlowParams;
   topology: TopologyParams;
   look: LookParams;
@@ -9,6 +10,7 @@ export interface ControlPanelState {
 }
 
 export interface ControlCallbacks {
+  onAspectRatioChange(mode: AspectRatioMode): void;
   onLiveChange(): void;
   onSimulationRebuild(): void;
   onSaveLayout(): void;
@@ -322,6 +324,7 @@ export function createControlPanel(
             <p class="project-description-line">Procedural reconstruction.</p>
           </div>
           <p id="status-line" class="status">Building reference field.</p>
+          <div id="aspect-mode-slot" class="aspect-mode-slot"></div>
           <div id="tabs-nav-slot" class="tabs-nav-slot"></div>
         </div>
         <div id="folders-root" class="folders-root"></div>
@@ -332,7 +335,7 @@ export function createControlPanel(
     </div>
     <div class="hint-row">
       <div id="fps-readout" class="fps-readout">FPS: --</div>
-      <div class="hint">Select: click | Move: drag | Radius: wheel or Shift-drag | Remove: middle click | Add: double click</div>
+      <div class="hint">Press: click toggle | Move: drag | Radius: wheel or Shift-drag | Emitter: middle click | Remove: right click | Add: double click</div>
     </div>
   `;
 
@@ -351,6 +354,7 @@ export function createControlPanel(
   const uiVisibilityButton = requireElement<HTMLButtonElement>(root, "#ui-visibility-btn");
   const statusLine = requireElement<HTMLParagraphElement>(root, "#status-line");
   const fpsReadout = requireElement<HTMLDivElement>(root, "#fps-readout");
+  const aspectModeSlot = requireElement<HTMLDivElement>(root, "#aspect-mode-slot");
   const tabsNavSlot = requireElement<HTMLDivElement>(root, "#tabs-nav-slot");
   const foldersRoot = requireElement<HTMLDivElement>(root, "#folders-root");
   const tabsNav = document.createElement("div");
@@ -371,6 +375,7 @@ export function createControlPanel(
 
   const tabButtons = {} as Record<TabKey, HTMLButtonElement>;
   const tabPanels = {} as Record<TabKey, HTMLDivElement>;
+  const aspectButtons = {} as Record<AspectRatioMode, HTMLButtonElement>;
 
   let uiHidden = false;
   let hintPositionRafId = 0;
@@ -494,6 +499,48 @@ export function createControlPanel(
       panelScrollbarThumb.releasePointerCapture(activePointerId);
     }
   };
+
+  const setAspectRatioMode = (mode: AspectRatioMode, emit: boolean): void => {
+    (Object.keys(aspectButtons) as AspectRatioMode[]).forEach((key) => {
+      aspectButtons[key].dataset.active = key === mode ? "true" : "false";
+    });
+    if (emit) {
+      callbacks.onAspectRatioChange(mode);
+    }
+  };
+
+  const aspectShell = document.createElement("div");
+  aspectShell.className = "aspect-mode-shell";
+
+  const aspectLabel = document.createElement("div");
+  aspectLabel.className = "aspect-mode-label";
+  aspectLabel.textContent = "Format";
+  aspectShell.appendChild(aspectLabel);
+
+  const aspectButtonsWrap = document.createElement("div");
+  aspectButtonsWrap.className = "aspect-mode-buttons";
+  const aspectOptions: Array<{ key: AspectRatioMode; label: string }> = [
+    { key: "portrait", label: "Portrait" },
+    { key: "square", label: "Square" },
+    { key: "landscape", label: "Landscape" },
+  ];
+
+  aspectOptions.forEach((option) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "aspect-mode-button";
+    button.textContent = option.label;
+    button.dataset.active = "false";
+    const onClick = (): void => setAspectRatioMode(option.key, true);
+    button.addEventListener("click", onClick);
+    cleanup.push(() => button.removeEventListener("click", onClick));
+    aspectButtons[option.key] = button;
+    aspectButtonsWrap.appendChild(button);
+  });
+
+  aspectShell.appendChild(aspectButtonsWrap);
+  aspectModeSlot.appendChild(aspectShell);
+  setAspectRatioMode(state.aspectRatioMode, false);
 
   const onScrollbarThumbPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || !getScrollbarMetrics()) {
@@ -901,6 +948,17 @@ export function createControlPanel(
   createTab("ui", "UI");
   const flowFolder = createFolder("FLOW", true);
   const flowBody = requireElement<HTMLDivElement>(flowFolder, ".folder-body");
+  bindSelect(
+    flowBody,
+    state.flow,
+    "spawnPreset",
+    "Spawn Preset",
+    [
+      { label: "Side Fed", value: "side-fed" },
+      { label: "Balanced", value: "balanced" },
+    ],
+    callbacks.onSimulationRebuild,
+  );
   bindRange(flowBody, state.flow, "particleCount", {
     label: "Particle Count",
     min: 1200,
@@ -998,6 +1056,13 @@ export function createControlPanel(
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);
+  bindRange(topologyBody, state.topology, "channelSmoothness", {
+    label: "Channel Smoothness",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    precision: 2,
+  }, callbacks.onLiveChange);
   bindRange(topologyBody, state.topology, "sideInflow", {
     label: "Side Inflow",
     min: 0,
@@ -1040,6 +1105,13 @@ export function createControlPanel(
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);
+  bindRange(topologyBody, state.topology, "backgroundNoiseRoughness", {
+    label: "Noise Roughness",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    precision: 2,
+  }, callbacks.onLiveChange);
   const layoutFolder = createFolder("LAYOUT EDIT", true);
   const layoutBody = requireElement<HTMLDivElement>(layoutFolder, ".folder-body");
   bindActionButton(layoutBody, "Save Layout", callbacks.onSaveLayout);
@@ -1050,6 +1122,13 @@ export function createControlPanel(
   bindColor(lookBody, state.look, "backgroundColor", "Background", callbacks.onLiveChange);
   bindColor(lookBody, state.look, "lineColor", "Line Color", callbacks.onLiveChange);
   bindColor(lookBody, state.look, "frameColor", "Frame Color", callbacks.onLiveChange);
+  bindRange(lookBody, state.look, "frameBevel", {
+    label: "Frame Chamfer",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    precision: 2,
+  }, callbacks.onLiveChange);
   bindColor(lookBody, state.look, "headCircleColor", "Head Circle Color", callbacks.onLiveChange);
   bindCheckbox(lookBody, state.look, "showHeadCircles", "Head Circles", callbacks.onLiveChange);
   bindRange(lookBody, state.look, "headCircleSize", {
@@ -1175,6 +1254,7 @@ export function createControlPanel(
     ],
     callbacks.onLiveChange,
   );
+  bindCheckbox(renderBody, state.render, "showFieldDebug", "Field Debug", callbacks.onLiveChange);
 
   const uiFolder = createFolder("UI CONFIG", true);
   const uiBody = requireElement<HTMLDivElement>(uiFolder, ".folder-body");

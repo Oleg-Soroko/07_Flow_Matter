@@ -21,12 +21,16 @@ export class FrameOverlay {
   private static readonly UNDERLAY_OPACITY = 0.88;
   private readonly scene: Scene;
   private readonly layout: ReferenceLayout;
+  private frameHalfWidth: number;
+  private frameHalfHeight: number;
   private frameGeometry: BufferGeometry | null = null;
   private frameMaterial: LineBasicMaterial | null = null;
   private frameObject: LineLoop<BufferGeometry, LineBasicMaterial> | null = null;
+  private currentFrameChamfer = -1;
   private readonly underlayGeometry = new CircleGeometry(1, 96);
   private readonly underlayMaskTexture: Texture;
   private readonly underlayMaterial: MeshStandardMaterial;
+  private readonly emitterUnderlayMaterial: MeshStandardMaterial;
   private readonly underlayMeshes: Mesh<CircleGeometry, MeshStandardMaterial>[] = [];
   private readonly voidMaterial = new MeshStandardMaterial({
     color: 0x050505,
@@ -37,20 +41,33 @@ export class FrameOverlay {
     depthWrite: true,
     depthTest: true,
   });
+  private readonly emitterVoidMaterial = new MeshStandardMaterial({
+    color: 0xe4e4e4,
+    roughness: 0.7,
+    metalness: 0.14,
+    emissive: 0x6a6a6a,
+    emissiveIntensity: 0.14,
+    depthWrite: true,
+    depthTest: true,
+  });
   private readonly voidGeometries: SphereGeometry[] = [];
   private readonly voidBasePositions: Float32Array[] = [];
   private readonly voidMeshes: Mesh<SphereGeometry, MeshStandardMaterial>[] = [];
   private readonly activeBlend: number[] = [];
   private readonly hoverPress: number[] = [];
+  private readonly pressedState: boolean[] = [];
   private selectionGeometry: BufferGeometry | null = null;
   private selectionMaterial: LineBasicMaterial | null = null;
   private selectionObject: LineLoop<BufferGeometry, LineBasicMaterial> | null = null;
   private selectedVoidIndex: number | null = null;
   private hoveredVoidIndex: number | null = null;
+  private suppressedHoveredVoidIndex: number | null = null;
 
   constructor(scene: Scene, layout: ReferenceLayout) {
     this.scene = scene;
     this.layout = layout;
+    this.frameHalfWidth = layout.halfWidth;
+    this.frameHalfHeight = layout.halfHeight;
     this.underlayMaskTexture = new TextureLoader().load("/mask.png");
     this.underlayMaskTexture.generateMipmaps = true;
     this.underlayMaskTexture.minFilter = LinearFilter;
@@ -63,6 +80,12 @@ export class FrameOverlay {
     this.underlayMaterial.alphaMap = this.underlayMaskTexture;
     this.underlayMaterial.depthWrite = true;
     this.underlayMaterial.depthTest = true;
+    this.emitterUnderlayMaterial = this.emitterVoidMaterial.clone();
+    this.emitterUnderlayMaterial.transparent = true;
+    this.emitterUnderlayMaterial.opacity = FrameOverlay.UNDERLAY_OPACITY;
+    this.emitterUnderlayMaterial.alphaMap = this.underlayMaskTexture;
+    this.emitterUnderlayMaterial.depthWrite = true;
+    this.emitterUnderlayMaterial.depthTest = true;
     this.buildFrame();
     this.buildVoids();
   }
@@ -72,6 +95,8 @@ export class FrameOverlay {
       this.frameMaterial.color.set(look.frameColor);
       this.frameMaterial.opacity = look.frameOpacity;
     }
+
+    this.updateFrameGeometry(look.frameBevel);
 
     const sphereColor = new Color(look.sphereColor);
     this.underlayMaterial.color.copy(sphereColor);
@@ -86,10 +111,27 @@ export class FrameOverlay {
     this.voidMaterial.emissive.copy(sphereColor);
     this.voidMaterial.emissiveIntensity = 0.015 + look.sphereBrightness * 0.035;
 
+    const emitterColor = sphereColor.clone();
+    emitterColor.setRGB(1 - emitterColor.r, 1 - emitterColor.g, 1 - emitterColor.b);
+    emitterColor.lerp(new Color(0xffffff), 0.38);
+    this.emitterUnderlayMaterial.color.copy(emitterColor);
+    this.emitterUnderlayMaterial.roughness = Math.max(0.28, look.sphereRoughness * 0.72);
+    this.emitterUnderlayMaterial.metalness = Math.max(0.14, look.sphereMetalness * 0.55);
+    this.emitterUnderlayMaterial.emissive.copy(emitterColor);
+    this.emitterUnderlayMaterial.emissiveIntensity = 0.05 + look.sphereBrightness * 0.08;
+    this.emitterUnderlayMaterial.opacity = FrameOverlay.UNDERLAY_OPACITY;
+    this.emitterVoidMaterial.color.copy(emitterColor);
+    this.emitterVoidMaterial.roughness = Math.max(0.28, look.sphereRoughness * 0.72);
+    this.emitterVoidMaterial.metalness = Math.max(0.14, look.sphereMetalness * 0.55);
+    this.emitterVoidMaterial.emissive.copy(emitterColor);
+    this.emitterVoidMaterial.emissiveIntensity = 0.05 + look.sphereBrightness * 0.08;
+
     for (let i = 0; i < this.voidMeshes.length; i += 1) {
       const underlayMesh = this.underlayMeshes[i];
       const voidMesh = this.voidMeshes[i];
       const voidNode = this.layout.voids[i];
+      underlayMesh.material = voidNode.emitter ? this.emitterUnderlayMaterial : this.underlayMaterial;
+      voidMesh.material = voidNode.emitter ? this.emitterVoidMaterial : this.voidMaterial;
       const targetBlend = voidNode.active ? 1 : 0;
       const blend = this.activeBlend[i] + (targetBlend - this.activeBlend[i]) * 0.36;
       this.activeBlend[i] = blend;
@@ -105,7 +147,8 @@ export class FrameOverlay {
       underlayMesh.visible = true;
       voidMesh.visible = true;
       const radius = voidNode.baseRadius * topology.voidRadiusScale;
-      const targetPress = blendEase > 0.08 && i === this.hoveredVoidIndex ? 1 : 0;
+      const isHovered = blendEase > 0.08 && i === this.hoveredVoidIndex && i !== this.suppressedHoveredVoidIndex;
+      const targetPress = (this.pressedState[i] || isHovered) ? 1 : 0;
       const press = this.hoverPress[i] + (targetPress - this.hoverPress[i]) * 0.18;
       this.hoverPress[i] = press;
       const spreadScale = 1 + press * 0.006;
@@ -165,13 +208,40 @@ export class FrameOverlay {
     this.hoveredVoidIndex = index;
   }
 
+  setFrameSize(width: number, height: number): void {
+    this.frameHalfWidth = width * 0.5;
+    this.frameHalfHeight = height * 0.5;
+    this.currentFrameChamfer = -1;
+    this.updateFrameGeometry();
+  }
+
+  setPressedVoid(index: number, pressed: boolean): void {
+    if (index >= 0 && index < this.pressedState.length) {
+      this.pressedState[index] = pressed;
+    }
+  }
+
+  clearPressedVoids(): void {
+    this.pressedState.fill(false);
+  }
+
+  suppressHoveredVoid(index: number | null): void {
+    this.suppressedHoveredVoidIndex = index;
+  }
+
+  releasePressInstant(index: number): void {
+    if (index >= 0 && index < this.hoverPress.length) {
+      this.hoverPress[index] = 0;
+    }
+  }
+
   dispose(): void {
+    this.frameGeometry?.dispose();
+    this.frameMaterial?.dispose();
     if (this.frameObject) {
       this.scene.remove(this.frameObject);
       this.frameObject = null;
     }
-    this.frameGeometry?.dispose();
-    this.frameMaterial?.dispose();
     this.selectionGeometry?.dispose();
     this.selectionMaterial?.dispose();
     if (this.selectionObject) {
@@ -187,8 +257,10 @@ export class FrameOverlay {
     }
     this.underlayMeshes.length = 0;
     this.voidMeshes.length = 0;
+    this.pressedState.length = 0;
     this.underlayGeometry.dispose();
     this.underlayMaterial.dispose();
+    this.emitterUnderlayMaterial.dispose();
     this.underlayMaskTexture.dispose();
     for (const geometry of this.voidGeometries) {
       geometry.dispose();
@@ -196,20 +268,11 @@ export class FrameOverlay {
     this.voidGeometries.length = 0;
     this.voidBasePositions.length = 0;
     this.voidMaterial.dispose();
+    this.emitterVoidMaterial.dispose();
   }
 
   private buildFrame(): void {
-    const x0 = -this.layout.halfWidth;
-    const x1 = this.layout.halfWidth;
-    const y0 = -this.layout.halfHeight;
-    const y1 = this.layout.halfHeight;
-
-    const vertices = new Float32Array([
-      x0, y0, 0.02,
-      x1, y0, 0.02,
-      x1, y1, 0.02,
-      x0, y1, 0.02,
-    ]);
+    const vertices = new Float32Array(8 * 3);
 
     this.frameGeometry = new BufferGeometry();
     this.frameGeometry.setAttribute("position", new BufferAttribute(vertices, 3));
@@ -222,10 +285,49 @@ export class FrameOverlay {
     });
     this.frameObject = new LineLoop(this.frameGeometry, this.frameMaterial);
     this.frameObject.frustumCulled = false;
-    this.frameObject.renderOrder = 30;
+    this.frameObject.renderOrder = 29;
     this.scene.add(this.frameObject);
+    this.updateFrameGeometry();
 
     this.buildSelection();
+  }
+
+  private updateFrameGeometry(frameBevel = this.currentFrameChamfer < 0 ? 0 : this.currentFrameChamfer): void {
+    if (!this.frameGeometry) {
+      return;
+    }
+
+    const clampedBevel = Math.max(0, Math.min(1, frameBevel));
+    if (Math.abs(clampedBevel - this.currentFrameChamfer) < 0.0005 && this.currentFrameChamfer >= 0) {
+      return;
+    }
+    this.currentFrameChamfer = clampedBevel;
+
+    const chamfer = Math.min(this.frameHalfWidth, this.frameHalfHeight) * 0.16 * clampedBevel;
+    const w = this.frameHalfWidth;
+    const h = this.frameHalfHeight;
+    const positions = (this.frameGeometry.getAttribute("position") as BufferAttribute).array as Float32Array;
+
+    const vertices = [
+      [-w + chamfer, -h, 0.03],
+      [w - chamfer, -h, 0.03],
+      [w, -h + chamfer, 0.03],
+      [w, h - chamfer, 0.03],
+      [w - chamfer, h, 0.03],
+      [-w + chamfer, h, 0.03],
+      [-w, h - chamfer, 0.03],
+      [-w, -h + chamfer, 0.03],
+    ];
+
+    for (let i = 0; i < vertices.length; i += 1) {
+      const offset = i * 3;
+      positions[offset] = vertices[i][0];
+      positions[offset + 1] = vertices[i][1];
+      positions[offset + 2] = vertices[i][2];
+    }
+
+    (this.frameGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
+    this.frameGeometry.computeBoundingSphere();
   }
 
   private buildVoids(): void {
@@ -239,6 +341,7 @@ export class FrameOverlay {
       this.underlayMeshes.push(underlayMesh);
       this.activeBlend.push(voidNode.active ? 1 : 0);
       this.hoverPress.push(0);
+      this.pressedState.push(false);
 
       const geometry = new SphereGeometry(1, 36, 28);
       this.voidGeometries.push(geometry);

@@ -77,6 +77,156 @@ const chooseVoid = (voids: ReferenceVoid[]): ReferenceVoid | null => {
   return activeVoids[Math.floor(Math.random() * activeVoids.length)];
 };
 
+const chooseEmitterVoid = (voids: ReferenceVoid[]): ReferenceVoid | null => {
+  const emitters = voids.filter((voidNode) => voidNode.active && voidNode.emitter);
+  if (emitters.length === 0) {
+    return null;
+  }
+  return emitters[Math.floor(Math.random() * emitters.length)];
+};
+
+const sampleEmitterSpawnForVoid = (
+  emitter: ReferenceVoid,
+  topology: TopologyParams,
+): MutableVec2 => {
+  const radius = emitter.baseRadius * topology.voidRadiusScale;
+  const angle = Math.random() * Math.PI * 2;
+  const ring = radius * randomRange(1.02, 1.08);
+  return {
+    x: emitter.x + Math.cos(angle) * ring,
+    y: emitter.y + Math.sin(angle) * ring,
+  };
+};
+
+const sampleEmitterSpawn = (
+  layout: ReferenceLayout,
+  topology: TopologyParams,
+): MutableVec2 | null => {
+  const emitter = chooseEmitterVoid(layout.voids);
+  if (!emitter) {
+    return null;
+  }
+
+  return sampleEmitterSpawnForVoid(emitter, topology);
+};
+
+const sampleEdgeSpawn = (layout: ReferenceLayout): MutableVec2 => {
+  const edgeMode = Math.random();
+  const verticalRange = layout.halfHeight * 0.94;
+  const horizontalRange = layout.halfWidth * 0.96;
+
+  if (edgeMode < 0.42) {
+    return {
+      x: -layout.halfWidth,
+      y: randomRange(-verticalRange, verticalRange),
+    };
+  }
+
+  if (edgeMode < 0.84) {
+    return {
+      x: layout.halfWidth,
+      y: randomRange(-verticalRange, verticalRange),
+    };
+  }
+
+  return {
+    x: randomRange(-horizontalRange, horizontalRange),
+    y: -layout.halfHeight,
+  };
+};
+
+const sampleBalancedRespawn = (
+  layout: ReferenceLayout,
+  flow: FlowParams,
+  topology: TopologyParams,
+  look: LookParams,
+): MutableVec2 => {
+  const emitterSpawn = sampleEmitterSpawn(layout, topology);
+  const mode = Math.random();
+
+  if (emitterSpawn && mode < 0.32) {
+    return emitterSpawn;
+  }
+
+  if (mode < 0.52) {
+    const band = chooseWeightedSpawnBand(layout.spawnBands);
+    const point = samplePolyline(band.points);
+    return {
+      x: point.x + randomRange(-band.width, band.width) * 0.25 + randomRange(-band.jitter, band.jitter),
+      y: point.y + randomRange(-band.width, band.width) * 0.25 + randomRange(-band.jitter, band.jitter),
+    };
+  }
+
+  if (mode < 0.86) {
+    const voidNode = chooseVoid(layout.voids);
+    if (voidNode) {
+      const radius = voidNode.baseRadius * topology.voidRadiusScale;
+      const angle = Math.random() * Math.PI * 2;
+      const ring = radius * randomRange(1.1, 2.2);
+      return {
+        x: voidNode.x + Math.cos(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter),
+        y: voidNode.y + Math.sin(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter),
+      };
+    }
+  }
+
+  let x = randomRange(-layout.halfWidth, layout.halfWidth);
+  let y = randomRange(-layout.halfHeight, layout.halfHeight);
+  if (Math.random() < look.grainDensity * 0.65) {
+    x *= randomRange(0.7, 1);
+    y *= randomRange(0.7, 1);
+  }
+  return { x, y };
+};
+
+const sampleSideFedRespawn = (
+  layout: ReferenceLayout,
+  flow: FlowParams,
+  topology: TopologyParams,
+  look: LookParams,
+): MutableVec2 => {
+  const emitterSpawn = sampleEmitterSpawn(layout, topology);
+  const mode = Math.random();
+
+  if (emitterSpawn && mode < 0.28) {
+    return emitterSpawn;
+  }
+
+  if (mode < 0.36) {
+    const band = chooseWeightedSpawnBand(layout.spawnBands);
+    const point = samplePolyline(band.points);
+    return {
+      x: point.x + randomRange(-band.width, band.width) * 0.25 + randomRange(-band.jitter, band.jitter),
+      y: point.y + randomRange(-band.width, band.width) * 0.25 + randomRange(-band.jitter, band.jitter),
+    };
+  }
+
+  if (mode < 0.58) {
+    const voidNode = chooseVoid(layout.voids);
+    if (voidNode) {
+      const radius = voidNode.baseRadius * topology.voidRadiusScale;
+      const angle = Math.random() * Math.PI * 2;
+      const ring = radius * randomRange(1.1, 2.2);
+      return {
+        x: voidNode.x + Math.cos(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter),
+        y: voidNode.y + Math.sin(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter),
+      };
+    }
+  }
+
+  if (mode < 0.92) {
+    return sampleEdgeSpawn(layout);
+  }
+
+  let x = randomRange(-layout.halfWidth, layout.halfWidth);
+  let y = randomRange(-layout.halfHeight, layout.halfHeight);
+  if (Math.random() < look.grainDensity * 0.65) {
+    x *= randomRange(0.7, 1);
+    y *= randomRange(0.7, 1);
+  }
+  return { x, y };
+};
+
 export class ParticleSystemRenderer {
   private readonly scene: Scene;
 
@@ -237,6 +387,32 @@ export class ParticleSystemRenderer {
     this.refreshGeometry(look);
   }
 
+  seedEmitterBurst(
+    emitterIndex: number,
+    burstCount: number,
+    flow: FlowParams,
+    topology: TopologyParams,
+    look: LookParams,
+    elapsedSeconds: number,
+  ): void {
+    if (!this.layout) {
+      return;
+    }
+
+    const emitter = this.layout.voids[emitterIndex];
+    if (!emitter || !emitter.active || !emitter.emitter) {
+      return;
+    }
+
+    const count = Math.max(1, Math.min(this.particleCount, Math.round(burstCount)));
+    for (let i = 0; i < count; i += 1) {
+      const particleIndex = Math.floor(Math.random() * this.particleCount);
+      const spawnPoint = sampleEmitterSpawnForVoid(emitter, topology);
+      this.respawnParticle(particleIndex, this.layout, flow, topology, look, elapsedSeconds, spawnPoint);
+    }
+    this.refreshGeometry(look);
+  }
+
   dispose(): void {
     this.disposeGeometry();
     this.positions = new Float32Array();
@@ -281,9 +457,20 @@ export class ParticleSystemRenderer {
           const midX = x + this.fieldVecA.x * dt * 0.5;
           const midY = y + this.fieldVecA.y * dt * 0.5;
           sampleField(midX, midY, elapsedSeconds + step * dt + dt * 0.5, layout, flow, topology, this.fieldVecB);
+          const fieldSpeed = Math.hypot(this.fieldVecB.x, this.fieldVecB.y);
 
           x += this.fieldVecB.x * dt;
           y += this.fieldVecB.y * dt;
+
+          const bottomStallBand = y < -layout.halfHeight * 0.48;
+          const centralStallBand = Math.abs(x) < layout.frameWidth * 0.22;
+          if (fieldSpeed < 0.11 && bottomStallBand && centralStallBand) {
+            this.respawnParticle(i, layout, flow, topology, look, elapsedSeconds);
+            respawned = true;
+            x = this.positions[index];
+            y = this.positions[index + 1];
+            break;
+          }
 
           if (isOutsideFrame(x, y, layout) || isInsideAnyVoid(x, y, layout, topology)) {
             this.respawnParticle(i, layout, flow, topology, look, elapsedSeconds);
@@ -400,37 +587,14 @@ export class ParticleSystemRenderer {
     topology: TopologyParams,
     look: LookParams,
     elapsedSeconds: number,
+    spawnPointOverride?: MutableVec2,
   ): void {
     const index = particleIndex * 2;
-    let x = 0;
-    let y = 0;
-    const mode = Math.random();
-
-    if (mode < 0.52) {
-      const band = chooseWeightedSpawnBand(layout.spawnBands);
-      const point = samplePolyline(band.points);
-      x = point.x + randomRange(-band.width, band.width) * 0.25 + randomRange(-band.jitter, band.jitter);
-      y = point.y + randomRange(-band.width, band.width) * 0.25 + randomRange(-band.jitter, band.jitter);
-    } else if (mode < 0.86) {
-      const voidNode = chooseVoid(layout.voids);
-      if (voidNode) {
-        const radius = voidNode.baseRadius * topology.voidRadiusScale;
-        const angle = Math.random() * Math.PI * 2;
-        const ring = radius * randomRange(1.1, 2.2);
-        x = voidNode.x + Math.cos(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter);
-        y = voidNode.y + Math.sin(angle) * ring + randomRange(-flow.respawnJitter, flow.respawnJitter);
-      } else {
-        x = randomRange(-layout.halfWidth, layout.halfWidth);
-        y = randomRange(-layout.halfHeight, layout.halfHeight);
-      }
-    } else {
-      x = randomRange(-layout.halfWidth, layout.halfWidth);
-      y = randomRange(-layout.halfHeight, layout.halfHeight);
-      if (Math.random() < look.grainDensity * 0.65) {
-        x *= randomRange(0.7, 1);
-        y *= randomRange(0.7, 1);
-      }
-    }
+    const spawnPoint = spawnPointOverride ?? (flow.spawnPreset === "balanced"
+      ? sampleBalancedRespawn(layout, flow, topology, look)
+      : sampleSideFedRespawn(layout, flow, topology, look));
+    let x = spawnPoint.x;
+    let y = spawnPoint.y;
 
     if (isInsideAnyVoid(x, y, layout, topology) || isOutsideFrame(x, y, layout, 0)) {
       x = randomRange(-layout.halfWidth * 0.8, layout.halfWidth * 0.8);
