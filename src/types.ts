@@ -43,6 +43,8 @@ export interface LookParams {
   frameColor: string;
   frameBevel: number;
   headCircleColor: string;
+  showParticles: boolean;
+  showTrailDots: boolean;
   showHeadCircles: boolean;
   headCircleSize: number;
   headCircleOpacity: number;
@@ -58,6 +60,7 @@ export interface LookParams {
   lineOpacity: number;
   lineBrightness: number;
   pointSize: number;
+  trailDotSize: number;
   frameOpacity: number;
   contrast: number;
   grainDensity: number;

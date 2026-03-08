@@ -16,6 +16,7 @@ export interface ControlCallbacks {
   onSymmetryChange(enabled: boolean): void;
   onLoadLayout(layoutId: string | null): void;
   onSaveLayout(selectedLayoutId: string | null): void;
+  onResetLayout(): void;
   onExportImage(): void;
   onExportGif(): void;
 }
@@ -559,11 +560,6 @@ export function createControlPanel(
   const aspectShell = document.createElement("div");
   aspectShell.className = "aspect-mode-shell";
 
-  const aspectLabel = document.createElement("div");
-  aspectLabel.className = "aspect-mode-label";
-  aspectLabel.textContent = "Format";
-  aspectShell.appendChild(aspectLabel);
-
   const aspectButtonsWrap = document.createElement("div");
   aspectButtonsWrap.className = "aspect-mode-buttons";
   const aspectOptions: Array<{ key: AspectRatioMode; label: string }> = [
@@ -1046,8 +1042,8 @@ export function createControlPanel(
   flowBody.appendChild(symmetrySelect.element);
   bindRange(flowBody, state.flow, "particleCount", {
     label: "Particle Count",
-    min: 1200,
-    max: 12000,
+    min: 500,
+    max: 3500,
     step: 100,
     precision: 0,
     commitOnly: true,
@@ -1111,6 +1107,7 @@ export function createControlPanel(
   );
   layoutBody.appendChild(savedLayoutSelect.element);
   bindActionButton(layoutBody, "Save Layout", (): void => callbacks.onSaveLayout(savedLayoutSelectionId));
+  bindActionButton(layoutBody, "Reset Layout", callbacks.onResetLayout);
 
   const topologyFolder = createFolder("TOPOLOGY", true);
   const topologyBody = requireElement<HTMLDivElement>(topologyFolder, ".folder-body");
@@ -1226,6 +1223,8 @@ export function createControlPanel(
     precision: 2,
   }, callbacks.onLiveChange);
   bindColor(lookBody, state.look, "headCircleColor", "Head Circle Color", callbacks.onLiveChange);
+  bindCheckbox(lookBody, state.look, "showParticles", "Particles", callbacks.onLiveChange);
+  bindCheckbox(lookBody, state.look, "showTrailDots", "Trail Dots", callbacks.onLiveChange);
   bindCheckbox(lookBody, state.look, "showHeadCircles", "Head Circles", callbacks.onLiveChange);
   bindRange(lookBody, state.look, "headCircleSize", {
     label: "Head Circle Size",
@@ -1301,7 +1300,14 @@ export function createControlPanel(
     precision: 2,
   }, callbacks.onLiveChange);
   bindRange(lookBody, state.look, "pointSize", {
-    label: "Point Size",
+    label: "End Particle Size",
+    min: 0.2,
+    max: 7,
+    step: 0.01,
+    precision: 2,
+  }, callbacks.onLiveChange);
+  bindRange(lookBody, state.look, "trailDotSize", {
+    label: "Trail Particle Size",
     min: 0.2,
     max: 7,
     step: 0.01,

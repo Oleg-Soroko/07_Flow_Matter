@@ -230,6 +230,9 @@ const sampleSideFedRespawn = (
 export class ParticleSystemRenderer {
   private readonly scene: Scene;
 
+  private trailDotsGeometry: BufferGeometry | null = null;
+  private trailDotsMaterial: PointsMaterial | null = null;
+  private trailDotsObject: Points<BufferGeometry, PointsMaterial> | null = null;
   private pointsGeometry: BufferGeometry | null = null;
   private pointsMaterial: PointsMaterial | null = null;
   private pointsObject: Points<BufferGeometry, PointsMaterial> | null = null;
@@ -246,6 +249,8 @@ export class ParticleSystemRenderer {
   private history = new Float32Array();
   private heads = new Uint16Array();
 
+  private trailDotPositions = new Float32Array();
+  private trailDotColors = new Float32Array();
   private pointPositions = new Float32Array();
   private pointColors = new Float32Array();
   private headPositions = new Float32Array();
@@ -270,7 +275,7 @@ export class ParticleSystemRenderer {
 
     this.layout = layout;
     this.flowParams = { ...flow };
-    this.particleCount = Math.max(100, Math.round(flow.particleCount));
+    this.particleCount = Math.min(3500, Math.max(500, Math.round(flow.particleCount)));
     this.trailLength = Math.max(8, Math.round(flow.trailLength));
 
     this.positions = new Float32Array(this.particleCount * 2);
@@ -278,8 +283,11 @@ export class ParticleSystemRenderer {
     this.history = new Float32Array(this.particleCount * this.trailLength * 2);
     this.heads = new Uint16Array(this.particleCount);
 
-    const pointCount = this.particleCount * this.trailLength;
+    const pointCount = this.particleCount;
+    const trailDotCount = this.particleCount * Math.max(this.trailLength - 1, 1);
     const lineVertexCount = this.particleCount * (this.trailLength - 1) * 2;
+    this.trailDotPositions = new Float32Array(trailDotCount * 3);
+    this.trailDotColors = new Float32Array(trailDotCount * 3);
     this.pointPositions = new Float32Array(pointCount * 3);
     this.pointColors = new Float32Array(pointCount * 3);
     this.headPositions = new Float32Array(this.particleCount * 3);
@@ -290,6 +298,26 @@ export class ParticleSystemRenderer {
     for (let i = 0; i < this.particleCount; i += 1) {
       this.respawnParticle(i, layout, flow, topology, look, 0);
     }
+
+    this.trailDotsGeometry = new BufferGeometry();
+    this.trailDotsGeometry.setAttribute("position", new BufferAttribute(this.trailDotPositions, 3));
+    this.trailDotsGeometry.setAttribute("color", new BufferAttribute(this.trailDotColors, 3));
+
+    this.trailDotsMaterial = new PointsMaterial({
+      size: look.trailDotSize,
+      sizeAttenuation: false,
+      vertexColors: true,
+      transparent: true,
+      opacity: 1,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+    });
+
+    this.trailDotsObject = new Points(this.trailDotsGeometry, this.trailDotsMaterial);
+    this.trailDotsObject.frustumCulled = false;
+    this.trailDotsObject.renderOrder = 8;
+    this.scene.add(this.trailDotsObject);
 
     this.pointsGeometry = new BufferGeometry();
     this.pointsGeometry.setAttribute("position", new BufferAttribute(this.pointPositions, 3));
@@ -353,8 +381,17 @@ export class ParticleSystemRenderer {
   }
 
   applyLook(look: LookParams): void {
+    if (this.trailDotsMaterial) {
+      this.trailDotsMaterial.size = look.trailDotSize;
+    }
+    if (this.trailDotsObject) {
+      this.trailDotsObject.visible = look.showTrailDots;
+    }
     if (this.pointsMaterial) {
       this.pointsMaterial.size = look.pointSize;
+    }
+    if (this.pointsObject) {
+      this.pointsObject.visible = look.showParticles;
     }
     if (this.headMaterial) {
       this.headMaterial.size = look.headCircleSize;
@@ -498,9 +535,12 @@ export class ParticleSystemRenderer {
     const baseColor = new Color(look.lineColor);
     const trailMax = Math.max(1, this.trailLength - 1);
     const brightness = look.lineBrightness * look.contrast;
-    const pointBrightness = brightness * 0.8;
+    const pointBrightness = brightness * 0.92;
+    const trailDotBrightness = brightness * 0.78;
+    const showTrailDots = look.showTrailDots;
     const showTrails = look.showTrails;
 
+    let trailDotWrite = 0;
     let pointWrite = 0;
     let headWrite = 0;
     let lineWrite = 0;
@@ -512,22 +552,24 @@ export class ParticleSystemRenderer {
       let prevX = 0;
       let prevY = 0;
 
+      const headHistoryIndex = (i * this.trailLength + head) * 2;
+      const headX = this.history[headHistoryIndex];
+      const headY = this.history[headHistoryIndex + 1];
+
+      this.pointPositions[pointWrite] = headX;
+      this.pointPositions[pointWrite + 1] = headY;
+      this.pointPositions[pointWrite + 2] = 0;
+      this.pointColors[pointWrite] = baseColor.r * pointBrightness;
+      this.pointColors[pointWrite + 1] = baseColor.g * pointBrightness;
+      this.pointColors[pointWrite + 2] = baseColor.b * pointBrightness;
+      pointWrite += 3;
+
       for (let step = 0; step < this.trailLength; step += 1) {
         const historySlot = (head - step + this.trailLength) % this.trailLength;
         const historyIndex = (i * this.trailLength + historySlot) * 2;
         const x = this.history[historyIndex];
         const y = this.history[historyIndex + 1];
-        const fade = showTrails
-          ? Math.pow(1 - step / trailMax, 1.05 / Math.max(look.contrast, 0.25))
-          : step === 0 ? 1 : 0;
-
-        this.pointPositions[pointWrite] = x;
-        this.pointPositions[pointWrite + 1] = y;
-        this.pointPositions[pointWrite + 2] = 0;
-        this.pointColors[pointWrite] = baseColor.r * pointBrightness * fade;
-        this.pointColors[pointWrite + 1] = baseColor.g * pointBrightness * fade;
-        this.pointColors[pointWrite + 2] = baseColor.b * pointBrightness * fade;
-        pointWrite += 3;
+        const fade = Math.pow(1 - step / trailMax, 1.05 / Math.max(look.contrast, 0.25));
 
         if (step === 0) {
           this.headPositions[headWrite] = x;
@@ -537,6 +579,17 @@ export class ParticleSystemRenderer {
           this.headColors[headWrite + 1] = headColor.g * headBrightness;
           this.headColors[headWrite + 2] = headColor.b * headBrightness;
           headWrite += 3;
+        }
+
+        if (showTrailDots && step > 0) {
+          const dotStrength = trailDotBrightness * fade;
+          this.trailDotPositions[trailDotWrite] = x;
+          this.trailDotPositions[trailDotWrite + 1] = y;
+          this.trailDotPositions[trailDotWrite + 2] = 0;
+          this.trailDotColors[trailDotWrite] = baseColor.r * dotStrength;
+          this.trailDotColors[trailDotWrite + 1] = baseColor.g * dotStrength;
+          this.trailDotColors[trailDotWrite + 2] = baseColor.b * dotStrength;
+          trailDotWrite += 3;
         }
 
         if (showTrails && step > 0) {
@@ -565,12 +618,19 @@ export class ParticleSystemRenderer {
       }
     }
 
+    if (!showTrailDots) {
+      this.trailDotColors.fill(0);
+      this.trailDotPositions.fill(0);
+    }
+
     if (!showTrails) {
       this.lineColors.fill(0);
       this.linePositions.fill(0);
     }
 
-    if (this.pointsGeometry && this.headGeometry && this.linesGeometry) {
+    if (this.trailDotsGeometry && this.pointsGeometry && this.headGeometry && this.linesGeometry) {
+      (this.trailDotsGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
+      (this.trailDotsGeometry.getAttribute("color") as BufferAttribute).needsUpdate = true;
       (this.pointsGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
       (this.pointsGeometry.getAttribute("color") as BufferAttribute).needsUpdate = true;
       (this.headGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
@@ -618,6 +678,10 @@ export class ParticleSystemRenderer {
   }
 
   private disposeGeometry(): void {
+    if (this.trailDotsObject) {
+      this.scene.remove(this.trailDotsObject);
+      this.trailDotsObject = null;
+    }
     if (this.pointsObject) {
       this.scene.remove(this.pointsObject);
       this.pointsObject = null;
@@ -631,6 +695,8 @@ export class ParticleSystemRenderer {
       this.linesObject = null;
     }
 
+    this.trailDotsGeometry?.dispose();
+    this.trailDotsMaterial?.dispose();
     this.pointsGeometry?.dispose();
     this.pointsMaterial?.dispose();
     this.headGeometry?.dispose();
@@ -639,6 +705,8 @@ export class ParticleSystemRenderer {
     this.linesGeometry?.dispose();
     this.linesMaterial?.dispose();
 
+    this.trailDotsGeometry = null;
+    this.trailDotsMaterial = null;
     this.pointsGeometry = null;
     this.pointsMaterial = null;
     this.headGeometry = null;

@@ -621,6 +621,19 @@ const applySymmetryIfEnabled = (notify = false): void => {
   }
 };
 
+const clearVoidInteractionState = (): void => {
+  pressedVoidIndices.clear();
+  frameOverlay.clearPressedVoids();
+  selectedVoidIndex = null;
+  hoveredVoidIndex = null;
+  hoverPressSuppressedVoidIndex = null;
+  pointerDownHitIndex = null;
+  pointerDownWasSelected = false;
+  pointerDidDrag = false;
+  setSelectedVoid(null);
+  setHoveredVoid(null);
+};
+
 const saveNamedLayoutToStorage = (requestedLayoutId: string | null): void => {
   const store = readNamedLayoutStore(aspectRatioMode);
   const selectedEntry = requestedLayoutId === null
@@ -681,19 +694,31 @@ const loadLayoutFromStorage = (layoutId: string | null): void => {
   writeNamedLayoutStore(aspectRatioMode, store);
   window.localStorage.setItem(getReferenceLayoutStorageKey(aspectRatioMode), JSON.stringify(captureVoidLayout(layout)));
 
-  pressedVoidIndices.clear();
-  frameOverlay.clearPressedVoids();
-  selectedVoidIndex = null;
-  hoveredVoidIndex = null;
-  hoverPressSuppressedVoidIndex = null;
-  pointerDownHitIndex = null;
-  pointerDownWasSelected = false;
-  pointerDidDrag = false;
-  setSelectedVoid(null);
-  setHoveredVoid(null);
+  clearVoidInteractionState();
   composer.reset();
   rebuildSimulation();
   controlPanel?.setStatus("Layout loaded.");
+  syncSavedLayoutDropdown();
+};
+
+const resetLayoutToDefault = (): void => {
+  const defaultLayout = createReferenceLayout(aspectRatioMode);
+  const restored = restoreVoidLayout(layout, captureVoidLayout(defaultLayout));
+  if (!restored) {
+    controlPanel?.setStatus("Failed to reset layout.", "error");
+    return;
+  }
+
+  applySymmetryIfEnabled(false);
+  if (!flowParams.symmetryEnabled && aspectRatioMode !== "portrait") {
+    constrainVoidsInsideFrame(layout);
+  }
+
+  window.localStorage.removeItem(getReferenceLayoutStorageKey(aspectRatioMode));
+  clearVoidInteractionState();
+  composer.reset();
+  rebuildSimulation();
+  controlPanel?.setStatus("Layout reset to default.");
   syncSavedLayoutDropdown();
 };
 
@@ -793,6 +818,9 @@ controlPanel = createControlPanel(
     },
     onSaveLayout: (layoutId): void => {
       saveNamedLayoutToStorage(layoutId);
+    },
+    onResetLayout: (): void => {
+      resetLayoutToDefault();
     },
     onExportImage: (): void => {
       void exportFrameImage();
