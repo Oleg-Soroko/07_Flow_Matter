@@ -161,6 +161,10 @@ const getAspectLayoutSpec = (mode: AspectRatioMode): AspectLayoutSpec => {
 export const getReferenceLayoutStorageKey = (mode: AspectRatioMode): string =>
   `${REFERENCE_LAYOUT_STORAGE_KEY}.${mode}`;
 
+const DEFAULT_LAYOUT_INSET_RATIO = 0.02;
+const RESTORED_VOID_INSET_RATIO = 0.01;
+const VISIBLE_VOID_RADIUS_SCALE = 1.12;
+
 const voidsNormalized: ReferenceVoidNormalized[] = [
   { x: 0.15, y: 0.89, radius: 0.033, influence: 0.12, spin: 1 },
   { x: 0.285, y: 0.89, radius: 0.032, influence: 0.12, spin: -1 },
@@ -388,6 +392,92 @@ const toWorldPoint = (point: ReferencePoint, frameWidth: number, frameHeight: nu
   y: (0.5 - point.y) * frameHeight,
 });
 
+const fitGeneratedLayoutInsideFrame = (layout: ReferenceLayout): void => {
+  const inset = Math.min(layout.frameWidth, layout.frameHeight) * DEFAULT_LAYOUT_INSET_RATIO;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  const includePoint = (x: number, y: number): void => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  };
+
+  for (const channel of layout.channels) {
+    for (const point of channel.points) {
+      includePoint(point.x, point.y);
+    }
+  }
+
+  for (const band of layout.spawnBands) {
+    for (const point of band.points) {
+      includePoint(point.x, point.y);
+    }
+  }
+
+  for (const voidNode of layout.voids) {
+    const visibleRadius = voidNode.baseRadius * referenceDefaults.topology.voidRadiusScale * VISIBLE_VOID_RADIUS_SCALE;
+    includePoint(voidNode.x - visibleRadius, voidNode.y - visibleRadius);
+    includePoint(voidNode.x + visibleRadius, voidNode.y + visibleRadius);
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return;
+  }
+
+  const centerX = (minX + maxX) * 0.5;
+  const centerY = (minY + maxY) * 0.5;
+  const extentHalfWidth = Math.max((maxX - minX) * 0.5, 1e-5);
+  const extentHalfHeight = Math.max((maxY - minY) * 0.5, 1e-5);
+  const availableHalfWidth = Math.max(layout.halfWidth - inset, 1e-5);
+  const availableHalfHeight = Math.max(layout.halfHeight - inset, 1e-5);
+  const scale = Math.min(1, availableHalfWidth / extentHalfWidth, availableHalfHeight / extentHalfHeight);
+
+  const transformPoint = (point: ReferencePoint): void => {
+    point.x = (point.x - centerX) * scale;
+    point.y = (point.y - centerY) * scale;
+  };
+
+  for (const voidNode of layout.voids) {
+    voidNode.x = (voidNode.x - centerX) * scale;
+    voidNode.y = (voidNode.y - centerY) * scale;
+    voidNode.baseRadius *= scale;
+    voidNode.influence *= scale;
+  }
+
+  for (const channel of layout.channels) {
+    for (const point of channel.points) {
+      transformPoint(point);
+    }
+    channel.radius *= scale;
+  }
+
+  for (const band of layout.spawnBands) {
+    for (const point of band.points) {
+      transformPoint(point);
+    }
+    band.width *= scale;
+    band.jitter *= scale;
+  }
+};
+
+export const constrainVoidsInsideFrame = (
+  layout: ReferenceLayout,
+  voidRadiusScale = referenceDefaults.topology.voidRadiusScale,
+): void => {
+  const inset = Math.min(layout.frameWidth, layout.frameHeight) * RESTORED_VOID_INSET_RATIO;
+  for (const voidNode of layout.voids) {
+    const visibleRadius = voidNode.baseRadius * voidRadiusScale * VISIBLE_VOID_RADIUS_SCALE;
+    const limitX = Math.max(0, layout.halfWidth - visibleRadius - inset);
+    const limitY = Math.max(0, layout.halfHeight - visibleRadius - inset);
+    voidNode.x = Math.max(-limitX, Math.min(limitX, voidNode.x));
+    voidNode.y = Math.max(-limitY, Math.min(limitY, voidNode.y));
+  }
+};
+
 export const createReferenceLayout = (
   mode: AspectRatioMode = "portrait",
 ): ReferenceLayout => {
@@ -398,7 +488,7 @@ export const createReferenceLayout = (
   const halfHeight = frameHeight * 0.5;
   const scaleUnit = mode === "portrait" ? frameWidth : Math.min(frameWidth, frameHeight);
 
-  return {
+  const layout: ReferenceLayout = {
     frameRect: { ...frameRectNormalized },
     frameWidth,
     frameHeight,
@@ -432,6 +522,12 @@ export const createReferenceLayout = (
       jitter: item.jitter * scaleUnit,
     })),
   };
+
+  if (mode !== "portrait") {
+    fitGeneratedLayoutInsideFrame(layout);
+  }
+
+  return layout;
 };
 
 export const captureVoidLayout = (layout: ReferenceLayout): SavedReferenceLayout => ({

@@ -1,4 +1,4 @@
-import type { AspectRatioMode, FlowParams, FpsLimitMode, LookParams, RenderParams, TopologyParams, UiParams } from "../types";
+import type { AspectRatioMode, FlowParams, FpsLimitMode, LookParams, RenderParams, SavedLayoutSummary, TopologyParams, UiParams } from "../types";
 
 export interface ControlPanelState {
   aspectRatioMode: AspectRatioMode;
@@ -13,13 +13,17 @@ export interface ControlCallbacks {
   onAspectRatioChange(mode: AspectRatioMode): void;
   onLiveChange(): void;
   onSimulationRebuild(): void;
-  onSaveLayout(): void;
-  onResetLayout(): void;
+  onLoadLayout(layoutId: string | null): void;
+  onSaveLayout(selectedLayoutId: string | null): void;
+  onExportImage(): void;
+  onExportGif(): void;
 }
 
 export interface ControlPanelApi {
   setStatus(text: string, kind?: "info" | "error"): void;
   setFps(fps: number): void;
+  setExporting(kind: "png" | "gif" | null): void;
+  setSavedLayouts(layouts: SavedLayoutSummary[], selectedId: string | null): void;
   dispose(): void;
 }
 
@@ -123,13 +127,20 @@ function applyHexSaturation(hex: string, saturation: number): string {
   );
 }
 
+interface SelectRowApi<T extends string> {
+  element: HTMLDivElement;
+  setOptions(options: Array<{ label: string; value: T }>, nextValue?: T | null): void;
+  setValue(value: T | null, emit?: boolean): void;
+  getValue(): T | null;
+}
+
 function createSelectRow<T extends string>(
   labelText: string,
   options: Array<{ label: string; value: T }>,
-  initialValue: T,
+  initialValue: T | null,
   onValue: (value: T) => void,
   cleanup: Array<() => void>,
-): HTMLDivElement {
+): SelectRowApi<T> {
   const row = document.createElement("div");
   row.className = "control-row";
 
@@ -156,10 +167,12 @@ function createSelectRow<T extends string>(
   menu.className = "control-select-menu";
   menu.setAttribute("role", "listbox");
 
-  const resolveOption = (value: T): { label: string; value: T } => options.find((option) => option.value === value) ?? options[0];
-  let currentValue = resolveOption(initialValue).value;
+  let currentOptions = [...options];
+  let currentValue: T | null = null;
   const optionButtons: Array<{ value: T; element: HTMLButtonElement }> = [];
   const getScrollHost = (): HTMLElement | null => selectRoot.closest<HTMLElement>(".tabs-panels");
+  const resolveOption = (value: T | null): { label: string; value: T } | null =>
+    currentOptions.find((option) => option.value === value) ?? currentOptions[0] ?? null;
 
   const updatePlacement = (): void => {
     const previousOpen = selectRoot.dataset.open;
@@ -203,42 +216,51 @@ function createSelectRow<T extends string>(
     trigger.setAttribute("aria-expanded", open ? "true" : "false");
   };
 
-  const setValue = (value: T, emit: boolean): void => {
+  const setValue = (value: T | null, emit: boolean): void => {
     const option = resolveOption(value);
-    currentValue = option.value;
-    valueElement.textContent = option.label;
+    currentValue = option?.value ?? null;
+    valueElement.textContent = option?.label ?? "No saved layouts";
+    trigger.disabled = option === null;
     for (const optionButton of optionButtons) {
-      const selected = optionButton.value === currentValue;
+      const selected = currentValue !== null && optionButton.value === currentValue;
       optionButton.element.dataset.selected = selected ? "true" : "false";
       optionButton.element.setAttribute("aria-selected", selected ? "true" : "false");
     }
-    if (emit) {
+    if (emit && currentValue !== null) {
       onValue(currentValue);
     }
   };
 
-  for (const option of options) {
-    const optionButton = document.createElement("button");
-    optionButton.type = "button";
-    optionButton.className = "control-select-option";
-    optionButton.textContent = option.label;
-    optionButton.dataset.selected = "false";
-    optionButton.setAttribute("role", "option");
-    optionButton.setAttribute("aria-selected", "false");
+  const rebuildMenu = (): void => {
+    optionButtons.length = 0;
+    menu.replaceChildren();
 
-    const onOptionClick = (): void => {
-      setValue(option.value, true);
-      setOpen(false);
-      trigger.focus();
-    };
+    for (const option of currentOptions) {
+      const optionButton = document.createElement("button");
+      optionButton.type = "button";
+      optionButton.className = "control-select-option";
+      optionButton.textContent = option.label;
+      optionButton.dataset.selected = "false";
+      optionButton.setAttribute("role", "option");
+      optionButton.setAttribute("aria-selected", "false");
 
-    optionButton.addEventListener("click", onOptionClick);
-    cleanup.push(() => optionButton.removeEventListener("click", onOptionClick));
-    optionButtons.push({ value: option.value, element: optionButton });
-    menu.appendChild(optionButton);
-  }
+      const onOptionClick = (): void => {
+        setValue(option.value, true);
+        setOpen(false);
+        trigger.focus();
+      };
+
+      optionButton.addEventListener("click", onOptionClick);
+      cleanup.push(() => optionButton.removeEventListener("click", onOptionClick));
+      optionButtons.push({ value: option.value, element: optionButton });
+      menu.appendChild(optionButton);
+    }
+  };
 
   const onTriggerClick = (): void => {
+    if (currentOptions.length === 0) {
+      return;
+    }
     setOpen(selectRoot.dataset.open !== "true");
   };
 
@@ -257,11 +279,15 @@ function createSelectRow<T extends string>(
     }
 
     event.preventDefault();
-    const currentIndex = options.findIndex((option) => option.value === currentValue);
+    if (currentOptions.length === 0) {
+      return;
+    }
+
+    const currentIndex = currentOptions.findIndex((option) => option.value === currentValue);
     const fallbackIndex = currentIndex >= 0 ? currentIndex : 0;
     const direction = event.key === "ArrowDown" ? 1 : -1;
-    const nextIndex = (fallbackIndex + direction + options.length) % options.length;
-    setValue(options[nextIndex].value, true);
+    const nextIndex = (fallbackIndex + direction + currentOptions.length) % currentOptions.length;
+    setValue(currentOptions[nextIndex].value, true);
   };
 
   const onDocumentPointerDown = (event: PointerEvent): void => {
@@ -301,13 +327,27 @@ function createSelectRow<T extends string>(
     cleanup.push(() => getScrollHost()?.removeEventListener("scroll", onScrollHostScroll));
   }
 
+  rebuildMenu();
   setValue(initialValue, false);
 
   selectRoot.appendChild(trigger);
   selectRoot.appendChild(menu);
   row.appendChild(label);
   row.appendChild(selectRoot);
-  return row;
+  return {
+    element: row,
+    setOptions(nextOptions: Array<{ label: string; value: T }>, nextValue?: T | null): void {
+      currentOptions = [...nextOptions];
+      rebuildMenu();
+      setValue(nextValue ?? currentValue, false);
+    },
+    setValue(value: T | null, emit = false): void {
+      setValue(value, emit);
+    },
+    getValue(): T | null {
+      return currentValue;
+    },
+  };
 }
 export function createControlPanel(
   root: HTMLElement,
@@ -324,6 +364,7 @@ export function createControlPanel(
             <p class="project-description-line">Procedural reconstruction.</p>
           </div>
           <p id="status-line" class="status">Building reference field.</p>
+          <div id="export-actions-slot" class="export-actions-slot"></div>
           <div id="aspect-mode-slot" class="aspect-mode-slot"></div>
           <div id="tabs-nav-slot" class="tabs-nav-slot"></div>
         </div>
@@ -354,6 +395,7 @@ export function createControlPanel(
   const uiVisibilityButton = requireElement<HTMLButtonElement>(root, "#ui-visibility-btn");
   const statusLine = requireElement<HTMLParagraphElement>(root, "#status-line");
   const fpsReadout = requireElement<HTMLDivElement>(root, "#fps-readout");
+  const exportActionsSlot = requireElement<HTMLDivElement>(root, "#export-actions-slot");
   const aspectModeSlot = requireElement<HTMLDivElement>(root, "#aspect-mode-slot");
   const tabsNavSlot = requireElement<HTMLDivElement>(root, "#tabs-nav-slot");
   const foldersRoot = requireElement<HTMLDivElement>(root, "#folders-root");
@@ -376,6 +418,8 @@ export function createControlPanel(
   const tabButtons = {} as Record<TabKey, HTMLButtonElement>;
   const tabPanels = {} as Record<TabKey, HTMLDivElement>;
   const aspectButtons = {} as Record<AspectRatioMode, HTMLButtonElement>;
+  let exportImageButton: HTMLButtonElement | null = null;
+  let exportGifButton: HTMLButtonElement | null = null;
 
   let uiHidden = false;
   let hintPositionRafId = 0;
@@ -541,6 +585,31 @@ export function createControlPanel(
   aspectShell.appendChild(aspectButtonsWrap);
   aspectModeSlot.appendChild(aspectShell);
   setAspectRatioMode(state.aspectRatioMode, false);
+
+  const exportActionsShell = document.createElement("div");
+  exportActionsShell.className = "export-actions-shell";
+
+  const exportImageAction = document.createElement("button");
+  exportImageAction.type = "button";
+  exportImageAction.className = "export-action-button";
+  exportImageAction.textContent = "Export PNG";
+  const onExportImageClick = (): void => callbacks.onExportImage();
+  exportImageAction.addEventListener("click", onExportImageClick);
+  cleanup.push(() => exportImageAction.removeEventListener("click", onExportImageClick));
+  exportActionsShell.appendChild(exportImageAction);
+  exportImageButton = exportImageAction;
+
+  const exportGifAction = document.createElement("button");
+  exportGifAction.type = "button";
+  exportGifAction.className = "export-action-button";
+  exportGifAction.textContent = "Export GIF";
+  const onExportGifClick = (): void => callbacks.onExportGif();
+  exportGifAction.addEventListener("click", onExportGifClick);
+  cleanup.push(() => exportGifAction.removeEventListener("click", onExportGifClick));
+  exportActionsShell.appendChild(exportGifAction);
+  exportGifButton = exportGifAction;
+
+  exportActionsSlot.appendChild(exportActionsShell);
 
   const onScrollbarThumbPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || !getScrollbarMetrics()) {
@@ -735,18 +804,17 @@ export function createControlPanel(
     options: Array<{ label: string; value: T[K] & string }>,
     onNotify: () => void,
   ): void => {
-    body.appendChild(
-      createSelectRow(
-        labelText,
-        options,
-        target[key] as T[K] & string,
-        (value): void => {
-          target[key] = value as T[K];
-          onNotify();
-        },
-        cleanup,
-      ),
+    const select = createSelectRow(
+      labelText,
+      options,
+      target[key] as T[K] & string,
+      (value): void => {
+        target[key] = value as T[K];
+        onNotify();
+      },
+      cleanup,
     );
+    body.appendChild(select.element);
   };
 
   const bindColor = <T extends object, K extends StringKeys<T>>(
@@ -1114,8 +1182,19 @@ export function createControlPanel(
   }, callbacks.onLiveChange);
   const layoutFolder = createFolder("LAYOUT EDIT", true);
   const layoutBody = requireElement<HTMLDivElement>(layoutFolder, ".folder-body");
-  bindActionButton(layoutBody, "Save Layout", callbacks.onSaveLayout);
-  bindActionButton(layoutBody, "Reset Layout", callbacks.onResetLayout);
+  let savedLayoutSelectionId: string | null = null;
+  const savedLayoutSelect = createSelectRow<string>(
+    "Saved Layout",
+    [],
+    null,
+    (value): void => {
+      savedLayoutSelectionId = value;
+      callbacks.onLoadLayout(value);
+    },
+    cleanup,
+  );
+  layoutBody.appendChild(savedLayoutSelect.element);
+  bindActionButton(layoutBody, "Save Layout", (): void => callbacks.onSaveLayout(savedLayoutSelectionId));
 
   const lookFolder = createFolder("LOOK", true);
   const lookBody = requireElement<HTMLDivElement>(lookFolder, ".folder-body");
@@ -1123,7 +1202,7 @@ export function createControlPanel(
   bindColor(lookBody, state.look, "lineColor", "Line Color", callbacks.onLiveChange);
   bindColor(lookBody, state.look, "frameColor", "Frame Color", callbacks.onLiveChange);
   bindRange(lookBody, state.look, "frameBevel", {
-    label: "Frame Chamfer",
+    label: "Corner Radius",
     min: 0,
     max: 1,
     step: 0.01,
@@ -1405,6 +1484,24 @@ export function createControlPanel(
     setFps(fps: number): void {
       const safeFps = Number.isFinite(fps) ? Math.max(0, fps) : 0;
       fpsReadout.textContent = `FPS: ${safeFps.toFixed(0)}`;
+    },
+    setExporting(kind: "png" | "gif" | null): void {
+      if (exportImageButton) {
+        exportImageButton.disabled = kind !== null;
+        exportImageButton.dataset.loading = kind === "png" ? "true" : "false";
+      }
+      if (exportGifButton) {
+        exportGifButton.disabled = kind !== null;
+        exportGifButton.dataset.loading = kind === "gif" ? "true" : "false";
+      }
+    },
+    setSavedLayouts(layouts: SavedLayoutSummary[], selectedId: string | null): void {
+      const options = layouts.map((layoutItem) => ({
+        label: layoutItem.name,
+        value: layoutItem.id,
+      }));
+      savedLayoutSelectionId = selectedId ?? options[0]?.value ?? null;
+      savedLayoutSelect.setOptions(options, savedLayoutSelectionId);
     },
     dispose(): void {
       for (const remove of cleanup) {

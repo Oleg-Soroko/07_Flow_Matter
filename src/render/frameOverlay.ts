@@ -19,6 +19,7 @@ import type { LookParams, TopologyParams } from "../types";
 
 export class FrameOverlay {
   private static readonly UNDERLAY_OPACITY = 0.88;
+  private static readonly FRAME_CORNER_SEGMENTS = 10;
   private readonly scene: Scene;
   private readonly layout: ReferenceLayout;
   private frameHalfWidth: number;
@@ -272,7 +273,7 @@ export class FrameOverlay {
   }
 
   private buildFrame(): void {
-    const vertices = new Float32Array(8 * 3);
+    const vertices = new Float32Array(this.getFrameVertexCount() * 3);
 
     this.frameGeometry = new BufferGeometry();
     this.frameGeometry.setAttribute("position", new BufferAttribute(vertices, 3));
@@ -303,31 +304,70 @@ export class FrameOverlay {
     }
     this.currentFrameChamfer = clampedBevel;
 
-    const chamfer = Math.min(this.frameHalfWidth, this.frameHalfHeight) * 0.16 * clampedBevel;
+    const cornerRadius = Math.min(this.frameHalfWidth, this.frameHalfHeight) * 0.16 * clampedBevel;
     const w = this.frameHalfWidth;
     const h = this.frameHalfHeight;
-    const positions = (this.frameGeometry.getAttribute("position") as BufferAttribute).array as Float32Array;
-
-    const vertices = [
-      [-w + chamfer, -h, 0.03],
-      [w - chamfer, -h, 0.03],
-      [w, -h + chamfer, 0.03],
-      [w, h - chamfer, 0.03],
-      [w - chamfer, h, 0.03],
-      [-w + chamfer, h, 0.03],
-      [-w, h - chamfer, 0.03],
-      [-w, -h + chamfer, 0.03],
-    ];
-
-    for (let i = 0; i < vertices.length; i += 1) {
-      const offset = i * 3;
-      positions[offset] = vertices[i][0];
-      positions[offset + 1] = vertices[i][1];
-      positions[offset + 2] = vertices[i][2];
+    const vertices = this.buildRoundedFrameVertices(w, h, cornerRadius);
+    const positionAttribute = this.frameGeometry.getAttribute("position") as BufferAttribute | undefined;
+    if (!positionAttribute || positionAttribute.count !== vertices.length / 3) {
+      this.frameGeometry.setAttribute("position", new BufferAttribute(new Float32Array(vertices), 3));
+    } else {
+      const positions = positionAttribute.array as Float32Array;
+      positions.set(vertices);
+      positionAttribute.needsUpdate = true;
     }
 
-    (this.frameGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
     this.frameGeometry.computeBoundingSphere();
+  }
+
+  private getFrameVertexCount(): number {
+    return FrameOverlay.FRAME_CORNER_SEGMENTS * 4 + 4;
+  }
+
+  private buildRoundedFrameVertices(width: number, height: number, radius: number): number[] {
+    const vertices: number[] = [];
+    const clampedRadius = Math.min(radius, width - 1e-4, height - 1e-4);
+    const z = 0.03;
+
+    if (clampedRadius <= 1e-4) {
+      return [
+        -width, -height, z,
+        width, -height, z,
+        width, height, z,
+        -width, height, z,
+      ];
+    }
+
+    const pushPoint = (x: number, y: number): void => {
+      vertices.push(x, y, z);
+    };
+
+    const pushArc = (
+      cx: number,
+      cy: number,
+      startAngle: number,
+      endAngle: number,
+      includeFirst: boolean,
+    ): void => {
+      const segments = FrameOverlay.FRAME_CORNER_SEGMENTS;
+      for (let i = includeFirst ? 0 : 1; i <= segments; i += 1) {
+        const t = i / segments;
+        const angle = startAngle + (endAngle - startAngle) * t;
+        pushPoint(cx + Math.cos(angle) * clampedRadius, cy + Math.sin(angle) * clampedRadius);
+      }
+    };
+
+    pushPoint(-width + clampedRadius, -height);
+    pushPoint(width - clampedRadius, -height);
+    pushArc(width - clampedRadius, -height + clampedRadius, -Math.PI / 2, 0, false);
+    pushPoint(width, height - clampedRadius);
+    pushArc(width - clampedRadius, height - clampedRadius, 0, Math.PI / 2, false);
+    pushPoint(-width + clampedRadius, height);
+    pushArc(-width + clampedRadius, height - clampedRadius, Math.PI / 2, Math.PI, false);
+    pushPoint(-width, -height + clampedRadius);
+    pushArc(-width + clampedRadius, -height + clampedRadius, Math.PI, Math.PI * 1.5, false);
+
+    return vertices;
   }
 
   private buildVoids(): void {

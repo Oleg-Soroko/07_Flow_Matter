@@ -1,4 +1,5 @@
 import "./style.css";
+import { GIFEncoder, applyPalette, quantize } from "gifenc";
 import { AmbientLight, Color, DirectionalLight, HemisphereLight, OrthographicCamera, Scene, Vector3, WebGLRenderer } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -6,11 +7,13 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { AfterimagePass } from "three/examples/jsm/postprocessing/AfterimagePass.js";
 import {
   captureVoidLayout,
+  constrainVoidsInsideFrame,
   createReferenceLayout,
   getReferenceLayoutStorageKey,
   referenceDefaults,
   restoreVoidLayout,
 } from "./referenceLayout";
+import type { SavedReferenceLayout } from "./referenceLayout";
 import { FieldDebugOverlay } from "./render/fieldDebugOverlay";
 import { FrameOverlay } from "./render/frameOverlay";
 import { ParticleSystemRenderer } from "./sim/particleSystem";
@@ -29,6 +32,27 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function waitAnimationFrame(): Promise<number> {
+  return new Promise((resolve) => window.requestAnimationFrame(resolve));
+}
+
+function formatTimestampForFile(date: Date): string {
+  const pad = (value: number): string => value.toString().padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+interface NamedSavedLayoutEntry {
+  id: string;
+  name: string;
+  savedAt: string;
+  layout: SavedReferenceLayout;
+}
+
+interface NamedSavedLayoutStore {
+  selectedId: string | null;
+  entries: NamedSavedLayoutEntry[];
+}
+
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) {
   throw new Error("Missing #app container.");
@@ -44,23 +68,145 @@ root.innerHTML = `
 const viewport = requireElement<HTMLDivElement>(root, "#viewport");
 const overlay = requireElement<HTMLDivElement>(root, "#overlay");
 let aspectRatioMode: AspectRatioMode = "portrait";
-let defaultLayout = createReferenceLayout(aspectRatioMode);
 let layout = createReferenceLayout(aspectRatioMode);
 restoreSavedLayout(aspectRatioMode, layout);
 
-function restoreSavedLayout(mode: AspectRatioMode, targetLayout: typeof layout): void {
+const getNamedLayoutStorageKey = (mode: AspectRatioMode): string =>
+  `${getReferenceLayoutStorageKey(mode)}.named`;
+
+const createLayoutId = (): string => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `layout-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+};
+
+const createUniqueLayoutName = (entries: NamedSavedLayoutEntry[], baseName: string): string => {
+  const normalizedBase = baseName.trim();
+  if (normalizedBase.length === 0) {
+    return "Layout 1";
+  }
+
+  const lowerNames = new Set(entries.map((entry) => entry.name.trim().toLowerCase()));
+  if (!lowerNames.has(normalizedBase.toLowerCase())) {
+    return normalizedBase;
+  }
+
+  let suffix = 2;
+  while (lowerNames.has(`${normalizedBase} (${suffix})`.toLowerCase())) {
+    suffix += 1;
+  }
+  return `${normalizedBase} (${suffix})`;
+};
+
+const sanitizeNamedLayoutStore = (raw: unknown): NamedSavedLayoutStore => {
+  if (!raw || typeof raw !== "object") {
+    return { selectedId: null, entries: [] };
+  }
+
+  const source = raw as { selectedId?: unknown; entries?: unknown };
+  const entries = Array.isArray(source.entries)
+    ? source.entries.flatMap((item): NamedSavedLayoutEntry[] => {
+      if (!item || typeof item !== "object") {
+        return [];
+      }
+      const record = item as Partial<NamedSavedLayoutEntry>;
+      if (
+        typeof record.id !== "string" ||
+        record.id.trim().length === 0 ||
+        typeof record.name !== "string" ||
+        record.name.trim().length === 0 ||
+        !record.layout ||
+        typeof record.layout !== "object"
+      ) {
+        return [];
+      }
+      return [{
+        id: record.id,
+        name: record.name.trim(),
+        savedAt: typeof record.savedAt === "string" ? record.savedAt : new Date(0).toISOString(),
+        layout: record.layout as SavedReferenceLayout,
+      }];
+    })
+    : [];
+
+  const selectedId = typeof source.selectedId === "string" && entries.some((entry) => entry.id === source.selectedId)
+    ? source.selectedId
+    : entries[0]?.id ?? null;
+
+  return { selectedId, entries };
+};
+
+const writeNamedLayoutStore = (mode: AspectRatioMode, store: NamedSavedLayoutStore): void => {
+  window.localStorage.setItem(getNamedLayoutStorageKey(mode), JSON.stringify(store));
+};
+
+const readNamedLayoutStore = (mode: AspectRatioMode): NamedSavedLayoutStore => {
+  const namedRaw = window.localStorage.getItem(getNamedLayoutStorageKey(mode));
+  if (namedRaw) {
+    try {
+      return sanitizeNamedLayoutStore(JSON.parse(namedRaw));
+    } catch {
+      window.localStorage.removeItem(getNamedLayoutStorageKey(mode));
+    }
+  }
+
+  const legacyRaw = window.localStorage.getItem(getReferenceLayoutStorageKey(mode));
+  if (!legacyRaw) {
+    return { selectedId: null, entries: [] };
+  }
+
+  try {
+    const parsed = JSON.parse(legacyRaw) as SavedReferenceLayout;
+    const migratedId = createLayoutId();
+    const migratedStore: NamedSavedLayoutStore = {
+      selectedId: migratedId,
+      entries: [{
+        id: migratedId,
+        name: "Saved Layout",
+        savedAt: new Date().toISOString(),
+        layout: parsed,
+      }],
+    };
+    writeNamedLayoutStore(mode, migratedStore);
+    return migratedStore;
+  } catch {
+    return { selectedId: null, entries: [] };
+  }
+};
+
+let selectedSavedLayoutId: string | null = readNamedLayoutStore(aspectRatioMode).selectedId;
+
+function restoreSavedLayout(mode: AspectRatioMode, targetLayout: typeof layout): boolean {
   const raw = window.localStorage.getItem(getReferenceLayoutStorageKey(mode));
   if (!raw) {
-    return;
+    return false;
   }
 
   try {
     const parsed = JSON.parse(raw);
-    restoreVoidLayout(targetLayout, parsed);
+    const restored = restoreVoidLayout(targetLayout, parsed);
+    if (!restored) {
+      return false;
+    }
+    if (mode !== "portrait") {
+      constrainVoidsInsideFrame(targetLayout);
+    }
+    return true;
   } catch {
     window.localStorage.removeItem(getReferenceLayoutStorageKey(mode));
+    return false;
   }
 }
+
+const syncSavedLayoutDropdown = (): void => {
+  const store = readNamedLayoutStore(aspectRatioMode);
+  selectedSavedLayoutId = store.selectedId ?? store.entries[0]?.id ?? null;
+  controlPanel?.setSavedLayouts(
+    store.entries.map((entry) => ({ id: entry.id, name: entry.name })),
+    selectedSavedLayoutId,
+  );
+};
 
 const flowParams: FlowParams = { ...referenceDefaults.flow };
 const topologyParams: TopologyParams = { ...referenceDefaults.topology };
@@ -162,6 +308,7 @@ let pointerDidDrag = false;
 let hoverPressSuppressedVoidIndex: number | null = null;
 const pressedVoidIndices = new Set<number>();
 let latestElapsedSeconds = 0;
+let exportInProgress = false;
 
 const getAspectFrameSize = (mode: AspectRatioMode): { width: number; height: number } => {
   const previewLayout = mode === aspectRatioMode ? layout : createReferenceLayout(mode);
@@ -212,6 +359,154 @@ const getPointerWorld = (clientX: number, clientY: number): Vector3 => {
   return pointerWorld.unproject(camera);
 };
 
+const projectWorldToCanvas = (x: number, y: number): { x: number; y: number } => {
+  const projected = new Vector3(x, y, 0).project(camera);
+  return {
+    x: (projected.x * 0.5 + 0.5) * renderer.domElement.width,
+    y: (-projected.y * 0.5 + 0.5) * renderer.domElement.height,
+  };
+};
+
+const getFrameCaptureRect = (): { x: number; y: number; width: number; height: number } => {
+  const topLeft = projectWorldToCanvas(-layout.halfWidth, layout.halfHeight);
+  const bottomRight = projectWorldToCanvas(layout.halfWidth, -layout.halfHeight);
+  const x = Math.max(0, Math.floor(Math.min(topLeft.x, bottomRight.x)));
+  const y = Math.max(0, Math.floor(Math.min(topLeft.y, bottomRight.y)));
+  const maxWidth = renderer.domElement.width - x;
+  const maxHeight = renderer.domElement.height - y;
+  const width = Math.max(1, Math.min(maxWidth, Math.ceil(Math.abs(bottomRight.x - topLeft.x))));
+  const height = Math.max(1, Math.min(maxHeight, Math.ceil(Math.abs(bottomRight.y - topLeft.y))));
+  return { x, y, width, height };
+};
+
+const renderCurrentFrame = (): void => {
+  controls.update();
+  if (lookParams.feedbackTrail) {
+    composer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
+};
+
+const captureFrameCanvas = (crop = getFrameCaptureRect()): HTMLCanvasElement => {
+  renderCurrentFrame();
+  const canvas = document.createElement("canvas");
+  canvas.width = crop.width;
+  canvas.height = crop.height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Failed to create export canvas.");
+  }
+  context.drawImage(
+    renderer.domElement,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+    0,
+    0,
+    crop.width,
+    crop.height,
+  );
+  return canvas;
+};
+
+const downloadBlob = (blob: Blob, filename: string): void => {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+const withExportLock = async (kind: "png" | "gif", task: () => Promise<void>): Promise<void> => {
+  if (exportInProgress) {
+    controlPanel?.setStatus("Export already in progress.", "error");
+    return;
+  }
+
+  exportInProgress = true;
+  controlPanel?.setExporting(kind);
+  try {
+    await task();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Export failed.";
+    controlPanel?.setStatus(message, "error");
+  } finally {
+    exportInProgress = false;
+    controlPanel?.setExporting(null);
+  }
+};
+
+const exportFrameImage = async (): Promise<void> => withExportLock("png", async () => {
+  controlPanel?.setStatus("Exporting PNG...");
+  await waitAnimationFrame();
+  const canvas = captureFrameCanvas();
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((nextBlob) => {
+      if (nextBlob) {
+        resolve(nextBlob);
+        return;
+      }
+      reject(new Error("PNG export failed."));
+    }, "image/png");
+  });
+
+  downloadBlob(blob, `flow-matter-${aspectRatioMode}-${formatTimestampForFile(new Date())}.png`);
+  controlPanel?.setStatus("PNG exported.");
+});
+
+const exportFrameGif = async (): Promise<void> => withExportLock("gif", async () => {
+  const fps = 24;
+  const durationMs = 5000;
+  const frameCount = Math.round((durationMs / 1000) * fps);
+  const frameDelayMs = Math.round(1000 / fps);
+  controlPanel?.setStatus(`Capturing GIF 0/${frameCount}...`);
+  await waitAnimationFrame();
+
+  const crop = getFrameCaptureRect();
+  const frames: Uint8ClampedArray[] = [];
+  const start = performance.now();
+
+  for (let index = 0; index < frameCount; index += 1) {
+    const targetTime = start + index * frameDelayMs;
+    while (performance.now() < targetTime) {
+      await waitAnimationFrame();
+    }
+
+    const frameCanvas = captureFrameCanvas(crop);
+    const context = frameCanvas.getContext("2d");
+    if (!context) {
+      throw new Error("Failed to read GIF frame.");
+    }
+    frames.push(context.getImageData(0, 0, crop.width, crop.height).data);
+    controlPanel?.setStatus(`Capturing GIF ${index + 1}/${frameCount}...`);
+  }
+
+  controlPanel?.setStatus("Encoding GIF...");
+  const gif = GIFEncoder();
+  for (const rgba of frames) {
+    const palette = quantize(rgba, 256);
+    const indices = applyPalette(rgba, palette);
+    gif.writeFrame(indices, crop.width, crop.height, {
+      palette,
+      delay: frameDelayMs,
+      repeat: 0,
+    });
+  }
+  gif.finish();
+  const gifBytes = gif.bytes();
+  const gifArray = new Uint8Array(gifBytes.byteLength);
+  gifArray.set(gifBytes);
+
+  downloadBlob(
+    new Blob([gifArray.buffer], { type: "image/gif" }),
+    `flow-matter-${aspectRatioMode}-${formatTimestampForFile(new Date())}.gif`,
+  );
+  controlPanel?.setStatus("GIF exported.");
+});
+
 const clampVoidPosition = (value: number, limit: number): number => {
   return Math.max(-limit, Math.min(limit, value));
 };
@@ -248,19 +543,79 @@ const findVoidAtWorld = (worldX: number, worldY: number): number | null => {
   return hitIndex;
 };
 
-const saveLayoutToStorage = (): void => {
-  window.localStorage.setItem(getReferenceLayoutStorageKey(aspectRatioMode), JSON.stringify(captureVoidLayout(layout)));
-  controlPanel?.setStatus("Layout saved.");
+const saveNamedLayoutToStorage = (requestedLayoutId: string | null): void => {
+  const store = readNamedLayoutStore(aspectRatioMode);
+  const selectedEntry = requestedLayoutId === null
+    ? null
+    : store.entries.find((entry) => entry.id === requestedLayoutId) ?? null;
+  const suggestedName = selectedEntry?.name ?? `${aspectRatioMode[0].toUpperCase()}${aspectRatioMode.slice(1)} ${store.entries.length + 1}`;
+  const rawName = window.prompt("Layout name", suggestedName);
+  if (rawName === null) {
+    return;
+  }
+
+  const name = rawName.trim();
+  if (name.length === 0) {
+    controlPanel?.setStatus("Layout name is required.", "error");
+    return;
+  }
+
+  const snapshot = captureVoidLayout(layout);
+  const targetEntry = {
+    id: createLayoutId(),
+    name: createUniqueLayoutName(store.entries, name),
+    savedAt: new Date().toISOString(),
+    layout: snapshot,
+  };
+  store.entries.push(targetEntry);
+
+  store.selectedId = targetEntry.id;
+  selectedSavedLayoutId = targetEntry.id;
+  writeNamedLayoutStore(aspectRatioMode, store);
+  window.localStorage.setItem(getReferenceLayoutStorageKey(aspectRatioMode), JSON.stringify(snapshot));
+  syncSavedLayoutDropdown();
+  controlPanel?.setStatus(`Layout saved: ${targetEntry.name}.`);
 };
 
-const resetLayoutToDefault = (): void => {
-  restoreVoidLayout(layout, captureVoidLayout(defaultLayout));
+const loadLayoutFromStorage = (layoutId: string | null): void => {
+  const store = readNamedLayoutStore(aspectRatioMode);
+  const targetEntry = layoutId === null
+    ? null
+    : store.entries.find((entry) => entry.id === layoutId) ?? null;
+  if (!targetEntry) {
+    controlPanel?.setStatus("Select a saved layout first.", "error");
+    syncSavedLayoutDropdown();
+    return;
+  }
+
+  if (!restoreVoidLayout(layout, targetEntry.layout)) {
+    controlPanel?.setStatus("Saved layout is invalid.", "error");
+    return;
+  }
+
+  if (aspectRatioMode !== "portrait") {
+    constrainVoidsInsideFrame(layout);
+  }
+
+  store.selectedId = targetEntry.id;
+  selectedSavedLayoutId = targetEntry.id;
+  writeNamedLayoutStore(aspectRatioMode, store);
+  window.localStorage.setItem(getReferenceLayoutStorageKey(aspectRatioMode), JSON.stringify(captureVoidLayout(layout)));
+
   pressedVoidIndices.clear();
   frameOverlay.clearPressedVoids();
+  selectedVoidIndex = null;
+  hoveredVoidIndex = null;
+  hoverPressSuppressedVoidIndex = null;
+  pointerDownHitIndex = null;
+  pointerDownWasSelected = false;
+  pointerDidDrag = false;
   setSelectedVoid(null);
-  window.localStorage.removeItem(getReferenceLayoutStorageKey(aspectRatioMode));
+  setHoveredVoid(null);
+  composer.reset();
   rebuildSimulation();
-  controlPanel?.setStatus("Layout reset.");
+  controlPanel?.setStatus("Layout loaded.");
+  syncSavedLayoutDropdown();
 };
 
 const applyLookSettings = (): void => {
@@ -296,9 +651,9 @@ const rebuildSimulation = (): void => {
 
 const applyAspectRatioMode = (mode: AspectRatioMode): void => {
   aspectRatioMode = mode;
-  defaultLayout = createReferenceLayout(mode);
   layout = createReferenceLayout(mode);
   restoreSavedLayout(mode, layout);
+  selectedSavedLayoutId = readNamedLayoutStore(mode).selectedId;
 
   pressedVoidIndices.clear();
   if (frameOverlay) {
@@ -319,6 +674,7 @@ const applyAspectRatioMode = (mode: AspectRatioMode): void => {
   updateCameraFrustum();
   applyRenderSettings();
   rebuildSimulation();
+  syncSavedLayoutDropdown();
 };
 
 controlPanel = createControlPanel(
@@ -344,14 +700,22 @@ controlPanel = createControlPanel(
     onSimulationRebuild: (): void => {
       rebuildSimulation();
     },
-    onSaveLayout: (): void => {
-      saveLayoutToStorage();
+    onLoadLayout: (layoutId): void => {
+      loadLayoutFromStorage(layoutId);
     },
-    onResetLayout: (): void => {
-      resetLayoutToDefault();
+    onSaveLayout: (layoutId): void => {
+      saveNamedLayoutToStorage(layoutId);
+    },
+    onExportImage: (): void => {
+      void exportFrameImage();
+    },
+    onExportGif: (): void => {
+      void exportFrameGif();
     },
   },
 );
+
+syncSavedLayoutDropdown();
 
 updateCameraFrustum();
 applyRenderSettings();

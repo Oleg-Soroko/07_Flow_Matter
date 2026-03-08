@@ -3,6 +3,11 @@ export type SpawnPresetMode = "balanced" | "side-fed";
 export type UiDepthMode = "soft" | "medium" | "deep";
 export type AspectRatioMode = "portrait" | "square" | "landscape";
 
+export interface SavedLayoutSummary {
+  id: string;
+  name: string;
+}
+
 export interface FlowParams {
   spawnPreset: SpawnPresetMode;
   particleCount: number;

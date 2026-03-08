@@ -179,6 +179,11 @@ export const sampleField = (
   const channelNearest = { x: 0, y: 0 };
   const channelTangent = { x: 0, y: 0 };
   let channelCoverage = 0;
+  let channelWeightTotal = 0;
+  let channelPullX = 0;
+  let channelPullY = 0;
+  let channelFlowX = 0;
+  let channelFlowY = 0;
 
   for (const channel of layout.channels) {
     const smoothness = clamp01(topology.channelSmoothness);
@@ -189,12 +194,23 @@ export const sampleField = (
     const mod = 1 + Math.sin(phase + channel.phase) * flow.loopAmount * 0.14;
     const dx = channelNearest.x - x;
     const dy = channelNearest.y - y;
+    const channelWeight = clamp01(smoothWeight);
 
-    out.x += dx * topology.channelPull * channel.pull * smoothWeight * 0.66;
-    out.y += dy * topology.channelPull * channel.pull * smoothWeight * 0.66;
-    out.x += channelTangent.x * topology.channelFlow * channel.flow * smoothWeight * mod;
-    out.y += channelTangent.y * topology.channelFlow * channel.flow * smoothWeight * mod;
+    channelPullX += dx * topology.channelPull * channel.pull * channelWeight;
+    channelPullY += dy * topology.channelPull * channel.pull * channelWeight;
+    channelFlowX += channelTangent.x * topology.channelFlow * channel.flow * channelWeight * mod;
+    channelFlowY += channelTangent.y * topology.channelFlow * channel.flow * channelWeight * mod;
+    channelWeightTotal += channelWeight;
     channelCoverage = 1 - (1 - channelCoverage) * (1 - clamp01(smoothWeight * 0.44));
+  }
+
+  if (channelWeightTotal > 1e-5) {
+    const normalizedWeight = 1 - Math.exp(-channelWeightTotal * 0.9);
+    const overlapWeight = clamp01((channelWeightTotal - 1) / 1.4);
+    const pullMix = 0.52 * (1 - overlapWeight * 0.82);
+    const flowMix = 1 + overlapWeight * 0.34;
+    out.x += ((channelPullX / channelWeightTotal) * pullMix + (channelFlowX / channelWeightTotal) * flowMix) * normalizedWeight;
+    out.y += ((channelPullY / channelWeightTotal) * pullMix + (channelFlowY / channelWeightTotal) * flowMix) * normalizedWeight;
   }
 
   for (const voidNode of layout.voids) {
@@ -211,7 +227,6 @@ export const sampleField = (
 
   const spineWeight = Math.exp(-(x * x) / Math.max(1e-5, layout.frameWidth * 0.12));
   out.x += -x * topology.spineStrength * spineWeight * 0.45;
-  out.y += -y * topology.spineStrength * spineWeight * 0.08;
 
   const edgeBandX = smoothstep(layout.halfWidth * 0.72, layout.halfWidth * 0.99, Math.abs(x));
   const edgeBandY = smoothstep(layout.halfHeight * 0.8, layout.halfHeight * 0.99, Math.abs(y));
