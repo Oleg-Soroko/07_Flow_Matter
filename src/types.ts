@@ -10,6 +10,7 @@ export interface SavedLayoutSummary {
 
 export interface FlowParams {
   spawnPreset: SpawnPresetMode;
+  symmetryEnabled: boolean;
   particleCount: number;
   trailLength: number;
   integrationStep: number;

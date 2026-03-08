@@ -245,7 +245,7 @@ keyLight.position.set(-3.2, 4.4, 6.2);
 rimLight.position.set(2.4, -1.6, 4.8);
 scene.add(ambientLight, hemiLight, keyLight, rimLight);
 
-const framePadding = 0.28;
+const framePadding = 0.5;
 const initialAspect = window.innerWidth / Math.max(window.innerHeight, 1);
 const camera = new OrthographicCamera(
   -1 * initialAspect,
@@ -388,15 +388,21 @@ const renderCurrentFrame = (): void => {
   }
 };
 
-const captureFrameCanvas = (crop = getFrameCaptureRect()): HTMLCanvasElement => {
+const captureFrameCanvas = (
+  crop = getFrameCaptureRect(),
+  outputScale = 1,
+): HTMLCanvasElement => {
   renderCurrentFrame();
   const canvas = document.createElement("canvas");
-  canvas.width = crop.width;
-  canvas.height = crop.height;
+  const scaledWidth = Math.max(1, Math.round(crop.width * outputScale));
+  const scaledHeight = Math.max(1, Math.round(crop.height * outputScale));
+  canvas.width = scaledWidth;
+  canvas.height = scaledHeight;
   const context = canvas.getContext("2d");
   if (!context) {
     throw new Error("Failed to create export canvas.");
   }
+  context.imageSmoothingEnabled = true;
   context.drawImage(
     renderer.domElement,
     crop.x,
@@ -405,8 +411,8 @@ const captureFrameCanvas = (crop = getFrameCaptureRect()): HTMLCanvasElement => 
     crop.height,
     0,
     0,
-    crop.width,
-    crop.height,
+    scaledWidth,
+    scaledHeight,
   );
   return canvas;
 };
@@ -462,11 +468,14 @@ const exportFrameGif = async (): Promise<void> => withExportLock("gif", async ()
   const durationMs = 5000;
   const frameCount = Math.round((durationMs / 1000) * fps);
   const frameDelayMs = Math.round(1000 / fps);
+  const outputScale = 0.7;
   controlPanel?.setStatus(`Capturing GIF 0/${frameCount}...`);
   await waitAnimationFrame();
 
   const crop = getFrameCaptureRect();
   const frames: Uint8ClampedArray[] = [];
+  let gifWidth = Math.max(1, Math.round(crop.width * outputScale));
+  let gifHeight = Math.max(1, Math.round(crop.height * outputScale));
   const start = performance.now();
 
   for (let index = 0; index < frameCount; index += 1) {
@@ -475,12 +484,14 @@ const exportFrameGif = async (): Promise<void> => withExportLock("gif", async ()
       await waitAnimationFrame();
     }
 
-    const frameCanvas = captureFrameCanvas(crop);
+    const frameCanvas = captureFrameCanvas(crop, outputScale);
     const context = frameCanvas.getContext("2d");
     if (!context) {
       throw new Error("Failed to read GIF frame.");
     }
-    frames.push(context.getImageData(0, 0, crop.width, crop.height).data);
+    gifWidth = frameCanvas.width;
+    gifHeight = frameCanvas.height;
+    frames.push(context.getImageData(0, 0, gifWidth, gifHeight).data);
     controlPanel?.setStatus(`Capturing GIF ${index + 1}/${frameCount}...`);
   }
 
@@ -489,7 +500,7 @@ const exportFrameGif = async (): Promise<void> => withExportLock("gif", async ()
   for (const rgba of frames) {
     const palette = quantize(rgba, 256);
     const indices = applyPalette(rgba, palette);
-    gif.writeFrame(indices, crop.width, crop.height, {
+    gif.writeFrame(indices, gifWidth, gifHeight, {
       palette,
       delay: frameDelayMs,
       repeat: 0,
@@ -543,6 +554,73 @@ const findVoidAtWorld = (worldX: number, worldY: number): number | null => {
   return hitIndex;
 };
 
+const symmetrizeLayoutLeftToRight = (): void => {
+  const mirrorThreshold = 0.04;
+  const leftIndices = layout.voids
+    .map((voidNode, index) => ({ voidNode, index }))
+    .filter(({ voidNode }) => voidNode.x < -mirrorThreshold)
+    .sort((left, right) => {
+      if (left.voidNode.y !== right.voidNode.y) {
+        return left.voidNode.y - right.voidNode.y;
+      }
+      return left.voidNode.x - right.voidNode.x;
+    });
+  const rightIndices = layout.voids
+    .map((voidNode, index) => ({ voidNode, index }))
+    .filter(({ voidNode }) => voidNode.x > mirrorThreshold)
+    .sort((left, right) => {
+      if (left.voidNode.y !== right.voidNode.y) {
+        return left.voidNode.y - right.voidNode.y;
+      }
+      return left.voidNode.x - right.voidNode.x;
+    });
+
+  if (leftIndices.length === 0 || rightIndices.length === 0) {
+    controlPanel?.setStatus("Symmetry needs both left and right side voids.", "error");
+    return;
+  }
+
+  for (let targetOrder = 0; targetOrder < rightIndices.length; targetOrder += 1) {
+    const target = rightIndices[targetOrder];
+    const sourceOrder = rightIndices.length === 1
+      ? Math.round((leftIndices.length - 1) * 0.5)
+      : Math.round((targetOrder * (leftIndices.length - 1)) / Math.max(rightIndices.length - 1, 1));
+    const source = leftIndices[Math.max(0, Math.min(leftIndices.length - 1, sourceOrder))];
+
+    target.voidNode.x = -source.voidNode.x;
+    target.voidNode.y = source.voidNode.y;
+    target.voidNode.baseRadius = source.voidNode.baseRadius;
+    target.voidNode.influence = source.voidNode.influence;
+    target.voidNode.active = source.voidNode.active;
+    target.voidNode.emitter = source.voidNode.emitter;
+
+    if (pressedVoidIndices.has(source.index)) {
+      pressedVoidIndices.add(target.index);
+    } else {
+      pressedVoidIndices.delete(target.index);
+    }
+  }
+};
+
+const applySymmetryIfEnabled = (notify = false): void => {
+  if (!flowParams.symmetryEnabled) {
+    return;
+  }
+
+  symmetrizeLayoutLeftToRight();
+  if (aspectRatioMode !== "portrait") {
+    constrainVoidsInsideFrame(layout, topologyParams.voidRadiusScale);
+  }
+
+  frameOverlay.clearPressedVoids();
+  for (const pressedIndex of pressedVoidIndices) {
+    frameOverlay.setPressedVoid(pressedIndex, true);
+  }
+  if (notify) {
+    controlPanel?.setStatus("Symmetry enabled. Left side drives right side.");
+  }
+};
+
 const saveNamedLayoutToStorage = (requestedLayoutId: string | null): void => {
   const store = readNamedLayoutStore(aspectRatioMode);
   const selectedEntry = requestedLayoutId === null
@@ -593,7 +671,8 @@ const loadLayoutFromStorage = (layoutId: string | null): void => {
     return;
   }
 
-  if (aspectRatioMode !== "portrait") {
+  applySymmetryIfEnabled(false);
+  if (!flowParams.symmetryEnabled && aspectRatioMode !== "portrait") {
     constrainVoidsInsideFrame(layout);
   }
 
@@ -654,6 +733,7 @@ const applyAspectRatioMode = (mode: AspectRatioMode): void => {
   layout = createReferenceLayout(mode);
   restoreSavedLayout(mode, layout);
   selectedSavedLayoutId = readNamedLayoutStore(mode).selectedId;
+  applySymmetryIfEnabled(false);
 
   pressedVoidIndices.clear();
   if (frameOverlay) {
@@ -699,6 +779,14 @@ controlPanel = createControlPanel(
     },
     onSimulationRebuild: (): void => {
       rebuildSimulation();
+    },
+    onSymmetryChange: (enabled): void => {
+      if (enabled) {
+        applySymmetryIfEnabled(true);
+        updateEditedVoid();
+      } else {
+        controlPanel?.setStatus("Symmetry disabled.");
+      }
     },
     onLoadLayout: (layoutId): void => {
       loadLayoutFromStorage(layoutId);
@@ -774,6 +862,7 @@ const onCanvasPointerDown = (event: PointerEvent): void => {
       setSelectedVoid(null);
     }
     setHoveredVoid(null);
+    applySymmetryIfEnabled(false);
     updateEditedVoid();
     controlPanel?.setStatus(`Void ${hitIndex + 1} removed. Reset layout to restore it.`);
     return;
@@ -795,6 +884,7 @@ const onCanvasPointerDown = (event: PointerEvent): void => {
         latestElapsedSeconds,
       );
     }
+    applySymmetryIfEnabled(false);
     controlPanel?.setStatus(
       voidNode.emitter
         ? `Void ${hitIndex + 1} set as emitter.`
@@ -862,6 +952,7 @@ const onCanvasPointerMove = (event: PointerEvent): void => {
     voidNode.influence = Math.max(0.04, Math.min(0.8, nextInfluence));
   }
 
+  applySymmetryIfEnabled(false);
   updateEditedVoid();
 };
 
@@ -945,6 +1036,7 @@ const onCanvasWheel = (event: WheelEvent): void => {
   const voidNode = layout.voids[targetIndex];
   const scale = event.deltaY < 0 ? 1.06 : 0.94;
   applyVoidRadius(targetIndex, voidNode.baseRadius * scale);
+  applySymmetryIfEnabled(false);
   updateEditedVoid();
   controlPanel?.setStatus(`Void ${targetIndex + 1} radius adjusted. Save layout if needed.`);
 };
@@ -976,6 +1068,7 @@ const onCanvasDoubleClick = (event: MouseEvent): void => {
   frameOverlay.setPressedVoid(inactiveIndex, false);
   setSelectedVoid(inactiveIndex);
   setHoveredVoid(inactiveIndex);
+  applySymmetryIfEnabled(false);
   updateEditedVoid();
   controlPanel?.setStatus(`Void ${inactiveIndex + 1} added. Save layout if needed.`);
 };

@@ -331,6 +331,7 @@ const spawnBandsNormalized: ReferenceSpawnBandNormalized[] = channelsNormalized.
 export const referenceDefaults: ReferenceDefaults = {
   flow: {
     spawnPreset: "side-fed",
+    symmetryEnabled: false,
     particleCount: 2000,
     trailLength: 128,
     integrationStep: 0.009,

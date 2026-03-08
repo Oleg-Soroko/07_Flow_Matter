@@ -13,6 +13,7 @@ export interface ControlCallbacks {
   onAspectRatioChange(mode: AspectRatioMode): void;
   onLiveChange(): void;
   onSimulationRebuild(): void;
+  onSymmetryChange(enabled: boolean): void;
   onLoadLayout(layoutId: string | null): void;
   onSaveLayout(selectedLayoutId: string | null): void;
   onExportImage(): void;
@@ -363,7 +364,6 @@ export function createControlPanel(
             <p class="project-description-line">Reference-driven 2D flow field.</p>
             <p class="project-description-line">Procedural reconstruction.</p>
           </div>
-          <p id="status-line" class="status">Building reference field.</p>
           <div id="export-actions-slot" class="export-actions-slot"></div>
           <div id="aspect-mode-slot" class="aspect-mode-slot"></div>
           <div id="tabs-nav-slot" class="tabs-nav-slot"></div>
@@ -376,7 +376,10 @@ export function createControlPanel(
     </div>
     <div class="hint-row">
       <div id="fps-readout" class="fps-readout">FPS: --</div>
-      <div class="hint">Press: click toggle | Move: drag | Radius: wheel or Shift-drag | Emitter: middle click | Remove: right click | Add: double click</div>
+      <div class="hint-stack">
+        <div class="hint">LMB drag = Move | LMB double click = Create new | MMB scroll = Scale | MMB click = Change type | RMB click = Delete</div>
+        <p id="status-line" class="status">Building reference field.</p>
+      </div>
     </div>
   `;
 
@@ -1027,6 +1030,20 @@ export function createControlPanel(
     ],
     callbacks.onSimulationRebuild,
   );
+  const symmetrySelect = createSelectRow<"off" | "on">(
+    "Symmetry",
+    [
+      { label: "Symmetry Off", value: "off" },
+      { label: "Symmetry On", value: "on" },
+    ],
+    state.flow.symmetryEnabled ? "on" : "off",
+    (value): void => {
+      state.flow.symmetryEnabled = value === "on";
+      callbacks.onSymmetryChange(state.flow.symmetryEnabled);
+    },
+    cleanup,
+  );
+  flowBody.appendChild(symmetrySelect.element);
   bindRange(flowBody, state.flow, "particleCount", {
     label: "Particle Count",
     min: 1200,
@@ -1079,6 +1096,21 @@ export function createControlPanel(
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);
+  const layoutFolder = createFolder("LAYOUT EDIT", true);
+  const layoutBody = requireElement<HTMLDivElement>(layoutFolder, ".folder-body");
+  let savedLayoutSelectionId: string | null = null;
+  const savedLayoutSelect = createSelectRow<string>(
+    "Saved Layout",
+    [],
+    null,
+    (value): void => {
+      savedLayoutSelectionId = value;
+      callbacks.onLoadLayout(value);
+    },
+    cleanup,
+  );
+  layoutBody.appendChild(savedLayoutSelect.element);
+  bindActionButton(layoutBody, "Save Layout", (): void => callbacks.onSaveLayout(savedLayoutSelectionId));
 
   const topologyFolder = createFolder("TOPOLOGY", true);
   const topologyBody = requireElement<HTMLDivElement>(topologyFolder, ".folder-body");
@@ -1180,21 +1212,6 @@ export function createControlPanel(
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);
-  const layoutFolder = createFolder("LAYOUT EDIT", true);
-  const layoutBody = requireElement<HTMLDivElement>(layoutFolder, ".folder-body");
-  let savedLayoutSelectionId: string | null = null;
-  const savedLayoutSelect = createSelectRow<string>(
-    "Saved Layout",
-    [],
-    null,
-    (value): void => {
-      savedLayoutSelectionId = value;
-      callbacks.onLoadLayout(value);
-    },
-    cleanup,
-  );
-  layoutBody.appendChild(savedLayoutSelect.element);
-  bindActionButton(layoutBody, "Save Layout", (): void => callbacks.onSaveLayout(savedLayoutSelectionId));
 
   const lookFolder = createFolder("LOOK", true);
   const lookBody = requireElement<HTMLDivElement>(lookFolder, ".folder-body");
@@ -1423,7 +1440,7 @@ export function createControlPanel(
   }, onUiChange);
   tabPanels.flow.appendChild(flowFolder);
   tabPanels.topology.appendChild(topologyFolder);
-  tabPanels.topology.appendChild(layoutFolder);
+  tabPanels.flow.appendChild(layoutFolder);
   tabPanels.look.appendChild(lookFolder);
   tabPanels.render.appendChild(renderFolder);
   tabPanels.ui.appendChild(uiFolder);
