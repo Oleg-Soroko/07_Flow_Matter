@@ -57,3 +57,30 @@ npm run preview
 - Use export buttons to save `PNG` or `GIF`.
 - Use the speaker button to mute/unmute audio.
 - Use the side toggle button to hide/show the control panel.
+
+## Deployment
+### Live Demo
+- https://oleg-soroko.github.io/07_Flow_Matter/
+
+### Build Locally (GitHub Pages Ready)
+Build with a relative base path so asset/media URLs stay relative:
+
+```bash
+npm ci
+npm run build -- --base ./
+npm run preview
+```
+
+The production output is generated in `dist/`.
+
+### Deploy to GitHub Pages (`gh-pages`)
+1. Build locally with `npm run build -- --base ./`.
+2. Create a temporary deploy folder outside this project and copy the contents of `dist/` into it.
+3. In that deploy folder, include:
+   - `index.html`
+   - `assets/`
+   - `.nojekyll`
+   - `env/.gitkeep` (optional placeholder)
+   - any static media files required by the app (for example `DefaultSound_01.mp3`, `mask.png`, `Reference.gif`)
+4. Initialize git in that deploy folder, commit the static files, and push that commit to the remote `gh-pages` branch.
+5. In GitHub repository settings, set Pages source to `gh-pages` and folder `/ (root)`.
