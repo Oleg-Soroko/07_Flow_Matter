@@ -19,6 +19,7 @@ export interface ControlCallbacks {
   onResetLayout(): void;
   onExportImage(): void;
   onExportGif(): void;
+  onAudioToggle(): void;
 }
 
 export interface ControlPanelApi {
@@ -26,6 +27,7 @@ export interface ControlPanelApi {
   setFps(fps: number): void;
   setExporting(kind: "png" | "gif" | null): void;
   setSavedLayouts(layouts: SavedLayoutSummary[], selectedId: string | null): void;
+  setAudioMuted(muted: boolean): void;
   dispose(): void;
 }
 
@@ -360,6 +362,23 @@ export function createControlPanel(
     <div class="panel-dock" data-ui-hidden="false">
       <section class="panel">
         <div class="panel-head">
+          <button id="audio-toggle-btn" class="audio-toggle-button" type="button" aria-label="Mute audio" title="Mute audio" data-muted="false">
+            <span class="audio-toggle-icon" aria-hidden="true">
+              <svg class="audio-toggle-glyph audio-toggle-glyph-on" viewBox="0 0 32 32" fill="none">
+                <circle cx="16" cy="16" r="13.5" />
+                <path d="M11 18.8H8.8c-.44 0-.8-.36-.8-.8v-4c0-.44.36-.8.8-.8H11l4.2-4.1c.51-.5 1.35-.14 1.35.58v12.64c0 .72-.84 1.08-1.35.58L11 18.8Z" />
+                <path d="M20.2 12.2c1.35 1 2.15 2.6 2.15 4.3s-.8 3.3-2.15 4.3" />
+                <path d="M22.8 9.8c2.05 1.65 3.3 4.15 3.3 6.7s-1.25 5.05-3.3 6.7" />
+              </svg>
+              <svg class="audio-toggle-glyph audio-toggle-glyph-off" viewBox="0 0 32 32" fill="none">
+                <circle cx="16" cy="16" r="13.5" />
+                <path d="M11 18.8H8.8c-.44 0-.8-.36-.8-.8v-4c0-.44.36-.8.8-.8H11l4.2-4.1c.51-.5 1.35-.14 1.35.58v12.64c0 .72-.84 1.08-1.35.58L11 18.8Z" />
+                <path d="M20.2 12.2c1.35 1 2.15 2.6 2.15 4.3s-.8 3.3-2.15 4.3" />
+                <path d="M22.8 9.8c2.05 1.65 3.3 4.15 3.3 6.7s-1.25 5.05-3.3 6.7" />
+                <path d="M10.1 9.9 22.1 22.1" />
+              </svg>
+            </span>
+          </button>
           <h1 class="title">${state.ui.mainTitle}</h1>
           <div class="project-description" aria-label="Project description">
             <p class="project-description-line">Reference-driven 2D flow field.</p>
@@ -397,6 +416,7 @@ export function createControlPanel(
   const projectDescriptionElement = requireElement<HTMLDivElement>(root, ".project-description");
   const hintRowElement = requireElement<HTMLDivElement>(root, ".hint-row");
   const uiVisibilityButton = requireElement<HTMLButtonElement>(root, "#ui-visibility-btn");
+  const audioToggleButton = requireElement<HTMLButtonElement>(root, "#audio-toggle-btn");
   const statusLine = requireElement<HTMLParagraphElement>(root, "#status-line");
   const fpsReadout = requireElement<HTMLDivElement>(root, "#fps-readout");
   const exportActionsSlot = requireElement<HTMLDivElement>(root, "#export-actions-slot");
@@ -610,6 +630,10 @@ export function createControlPanel(
 
   exportActionsSlot.appendChild(exportActionsShell);
 
+  const onAudioToggleClick = (): void => callbacks.onAudioToggle();
+  audioToggleButton.addEventListener("click", onAudioToggleClick);
+  cleanup.push(() => audioToggleButton.removeEventListener("click", onAudioToggleClick));
+
   const onScrollbarThumbPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || !getScrollbarMetrics()) {
       return;
@@ -698,7 +722,7 @@ export function createControlPanel(
     onNotify: () => void,
   ): void => {
     const row = document.createElement("div");
-    row.className = "control-row";
+    row.className = "control-row control-row-color";
 
     const label = document.createElement("label");
     label.className = "control-label";
@@ -824,7 +848,7 @@ export function createControlPanel(
     onNotify: () => void,
   ): void => {
     const row = document.createElement("div");
-    row.className = "control-row";
+    row.className = "control-row control-row-color";
 
     const label = document.createElement("label");
     label.className = "control-label";
@@ -1210,80 +1234,47 @@ export function createControlPanel(
     precision: 2,
   }, callbacks.onLiveChange);
 
-  const lookFolder = createFolder("LOOK", true);
+  const lookFolder = createFolder("VISUAL", true);
   const lookBody = requireElement<HTMLDivElement>(lookFolder, ".folder-body");
+  const lookToggleGroup = document.createElement("div");
+  lookToggleGroup.className = "checkbox-group";
+  lookBody.appendChild(lookToggleGroup);
+  bindCheckbox(lookToggleGroup, state.look, "showParticles", "Particles", callbacks.onLiveChange);
+  bindCheckbox(lookToggleGroup, state.look, "showTrailDots", "Trail Dots", callbacks.onLiveChange);
+  bindCheckbox(lookToggleGroup, state.look, "showTrails", "Trail Lines", callbacks.onLiveChange);
   bindColor(lookBody, state.look, "backgroundColor", "Background", callbacks.onLiveChange);
   bindColor(lookBody, state.look, "lineColor", "Line Color", callbacks.onLiveChange);
   bindColor(lookBody, state.look, "frameColor", "Frame Color", callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "frameBevel", {
-    label: "Corner Radius",
-    min: 0,
-    max: 1,
-    step: 0.01,
-    precision: 2,
-  }, callbacks.onLiveChange);
-  bindColor(lookBody, state.look, "headCircleColor", "Head Circle Color", callbacks.onLiveChange);
-  bindCheckbox(lookBody, state.look, "showParticles", "Particles", callbacks.onLiveChange);
-  bindCheckbox(lookBody, state.look, "showTrailDots", "Trail Dots", callbacks.onLiveChange);
-  bindCheckbox(lookBody, state.look, "showHeadCircles", "Head Circles", callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "headCircleSize", {
-    label: "Head Circle Size",
-    min: 0.4,
-    max: 8,
-    step: 0.01,
-    precision: 2,
-  }, callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "headCircleOpacity", {
-    label: "Head Circle Opacity",
-    min: 0,
-    max: 1,
-    step: 0.01,
-    precision: 2,
-  }, callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "headCircleThickness", {
-    label: "Head Circle Thickness",
-    min: 0.06,
-    max: 0.48,
-    step: 0.01,
-    precision: 2,
-  }, callbacks.onLiveChange);
-  bindColor(lookBody, state.look, "sphereColor", "Material Color", callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "sphereBrightness", {
+  const attractorMaterialFolder = createFolder("ATTRACTOR MATERIAL", true);
+  const attractorMaterialBody = requireElement<HTMLDivElement>(attractorMaterialFolder, ".folder-body");
+  bindColor(attractorMaterialBody, state.look, "sphereColor", "Material Color", callbacks.onLiveChange);
+  bindRange(attractorMaterialBody, state.look, "sphereBrightness", {
     label: "Sphere Brightness",
     min: 0,
     max: 2,
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "sphereContrast", {
+  bindRange(attractorMaterialBody, state.look, "sphereContrast", {
     label: "Sphere Contrast",
     min: 0,
     max: 2,
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "sphereRoughness", {
+  bindRange(attractorMaterialBody, state.look, "sphereRoughness", {
     label: "Sphere Roughness",
     min: 0,
     max: 1,
     step: 0.01,
     precision: 2,
   }, callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "sphereMetalness", {
+  bindRange(attractorMaterialBody, state.look, "sphereMetalness", {
     label: "Sphere Metalness",
     min: 0,
     max: 1,
     step: 0.01,
     precision: 2,
-  }, callbacks.onLiveChange);
-  bindCheckbox(lookBody, state.look, "showTrails", "Trail Lines", callbacks.onLiveChange);
-  bindCheckbox(lookBody, state.look, "feedbackTrail", "Feedback Trail", callbacks.onLiveChange);
-  bindRange(lookBody, state.look, "feedbackDamp", {
-    label: "Feedback Damp",
-    min: 0.72,
-    max: 0.98,
-    step: 0.005,
-    precision: 3,
   }, callbacks.onLiveChange);
   bindRange(lookBody, state.look, "lineOpacity", {
     label: "Line Opacity",
@@ -1329,6 +1320,13 @@ export function createControlPanel(
   }, callbacks.onLiveChange);
   bindRange(lookBody, state.look, "grainDensity", {
     label: "Grain Density",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    precision: 2,
+  }, callbacks.onLiveChange);
+  bindRange(lookBody, state.look, "frameBevel", {
+    label: "Corner Radius",
     min: 0,
     max: 1,
     step: 0.01,
@@ -1448,6 +1446,7 @@ export function createControlPanel(
   tabPanels.topology.appendChild(topologyFolder);
   tabPanels.flow.appendChild(layoutFolder);
   tabPanels.look.appendChild(lookFolder);
+  tabPanels.look.appendChild(attractorMaterialFolder);
   tabPanels.render.appendChild(renderFolder);
   tabPanels.ui.appendChild(uiFolder);
 
@@ -1525,6 +1524,12 @@ export function createControlPanel(
       }));
       savedLayoutSelectionId = selectedId ?? options[0]?.value ?? null;
       savedLayoutSelect.setOptions(options, savedLayoutSelectionId);
+    },
+    setAudioMuted(muted: boolean): void {
+      audioToggleButton.dataset.muted = muted ? "true" : "false";
+      const label = muted ? "Unmute audio" : "Mute audio";
+      audioToggleButton.setAttribute("aria-label", label);
+      audioToggleButton.title = label;
     },
     dispose(): void {
       for (const remove of cleanup) {

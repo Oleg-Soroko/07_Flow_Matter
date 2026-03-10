@@ -2,7 +2,6 @@ import {
   AdditiveBlending,
   BufferAttribute,
   BufferGeometry,
-  CanvasTexture,
   Color,
   LineBasicMaterial,
   LineSegments,
@@ -236,10 +235,6 @@ export class ParticleSystemRenderer {
   private pointsGeometry: BufferGeometry | null = null;
   private pointsMaterial: PointsMaterial | null = null;
   private pointsObject: Points<BufferGeometry, PointsMaterial> | null = null;
-  private headGeometry: BufferGeometry | null = null;
-  private headMaterial: PointsMaterial | null = null;
-  private headObject: Points<BufferGeometry, PointsMaterial> | null = null;
-  private headTexture: CanvasTexture | null = null;
   private linesGeometry: BufferGeometry | null = null;
   private linesMaterial: LineBasicMaterial | null = null;
   private linesObject: LineSegments<BufferGeometry, LineBasicMaterial> | null = null;
@@ -253,8 +248,6 @@ export class ParticleSystemRenderer {
   private trailDotColors = new Float32Array();
   private pointPositions = new Float32Array();
   private pointColors = new Float32Array();
-  private headPositions = new Float32Array();
-  private headColors = new Float32Array();
   private linePositions = new Float32Array();
   private lineColors = new Float32Array();
 
@@ -290,8 +283,6 @@ export class ParticleSystemRenderer {
     this.trailDotColors = new Float32Array(trailDotCount * 3);
     this.pointPositions = new Float32Array(pointCount * 3);
     this.pointColors = new Float32Array(pointCount * 3);
-    this.headPositions = new Float32Array(this.particleCount * 3);
-    this.headColors = new Float32Array(this.particleCount * 3);
     this.linePositions = new Float32Array(lineVertexCount * 3);
     this.lineColors = new Float32Array(lineVertexCount * 3);
 
@@ -327,10 +318,9 @@ export class ParticleSystemRenderer {
       size: look.pointSize,
       sizeAttenuation: false,
       vertexColors: true,
-      transparent: true,
+      transparent: false,
       opacity: 1,
-      blending: AdditiveBlending,
-      depthWrite: false,
+      depthWrite: true,
       depthTest: true,
     });
 
@@ -338,28 +328,6 @@ export class ParticleSystemRenderer {
     this.pointsObject.frustumCulled = false;
     this.pointsObject.renderOrder = 10;
     this.scene.add(this.pointsObject);
-
-    this.headGeometry = new BufferGeometry();
-    this.headGeometry.setAttribute("position", new BufferAttribute(this.headPositions, 3));
-    this.headGeometry.setAttribute("color", new BufferAttribute(this.headColors, 3));
-
-    this.headTexture = this.createRingTexture(look.headCircleThickness);
-    this.headMaterial = new PointsMaterial({
-      size: look.headCircleSize,
-      sizeAttenuation: false,
-      map: this.headTexture,
-      alphaMap: this.headTexture,
-      vertexColors: true,
-      transparent: true,
-      opacity: look.headCircleOpacity,
-      blending: AdditiveBlending,
-      depthWrite: false,
-      depthTest: true,
-    });
-    this.headObject = new Points(this.headGeometry, this.headMaterial);
-    this.headObject.frustumCulled = false;
-    this.headObject.renderOrder = 11;
-    this.scene.add(this.headObject);
 
     this.linesGeometry = new BufferGeometry();
     this.linesGeometry.setAttribute("position", new BufferAttribute(this.linePositions, 3));
@@ -393,16 +361,8 @@ export class ParticleSystemRenderer {
     if (this.pointsObject) {
       this.pointsObject.visible = look.showParticles;
     }
-    if (this.headMaterial) {
-      this.headMaterial.size = look.headCircleSize;
-      this.headMaterial.opacity = look.headCircleOpacity;
-      this.updateHeadTexture(look.headCircleThickness);
-    }
     if (this.linesMaterial) {
       this.linesMaterial.opacity = look.lineOpacity;
-    }
-    if (this.headObject) {
-      this.headObject.visible = look.showHeadCircles;
     }
     if (this.linesObject) {
       this.linesObject.visible = look.showTrails;
@@ -542,10 +502,7 @@ export class ParticleSystemRenderer {
 
     let trailDotWrite = 0;
     let pointWrite = 0;
-    let headWrite = 0;
     let lineWrite = 0;
-    const headColor = new Color(look.headCircleColor);
-    const headBrightness = Math.max(0.25, look.lineBrightness * 1.15);
 
     for (let i = 0; i < this.particleCount; i += 1) {
       const head = this.heads[i];
@@ -570,16 +527,6 @@ export class ParticleSystemRenderer {
         const x = this.history[historyIndex];
         const y = this.history[historyIndex + 1];
         const fade = Math.pow(1 - step / trailMax, 1.05 / Math.max(look.contrast, 0.25));
-
-        if (step === 0) {
-          this.headPositions[headWrite] = x;
-          this.headPositions[headWrite + 1] = y;
-          this.headPositions[headWrite + 2] = 0.01;
-          this.headColors[headWrite] = headColor.r * headBrightness;
-          this.headColors[headWrite + 1] = headColor.g * headBrightness;
-          this.headColors[headWrite + 2] = headColor.b * headBrightness;
-          headWrite += 3;
-        }
 
         if (showTrailDots && step > 0) {
           const dotStrength = trailDotBrightness * fade;
@@ -628,13 +575,11 @@ export class ParticleSystemRenderer {
       this.linePositions.fill(0);
     }
 
-    if (this.trailDotsGeometry && this.pointsGeometry && this.headGeometry && this.linesGeometry) {
+    if (this.trailDotsGeometry && this.pointsGeometry && this.linesGeometry) {
       (this.trailDotsGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
       (this.trailDotsGeometry.getAttribute("color") as BufferAttribute).needsUpdate = true;
       (this.pointsGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
       (this.pointsGeometry.getAttribute("color") as BufferAttribute).needsUpdate = true;
-      (this.headGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
-      (this.headGeometry.getAttribute("color") as BufferAttribute).needsUpdate = true;
       (this.linesGeometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
       (this.linesGeometry.getAttribute("color") as BufferAttribute).needsUpdate = true;
     }
@@ -686,10 +631,6 @@ export class ParticleSystemRenderer {
       this.scene.remove(this.pointsObject);
       this.pointsObject = null;
     }
-    if (this.headObject) {
-      this.scene.remove(this.headObject);
-      this.headObject = null;
-    }
     if (this.linesObject) {
       this.scene.remove(this.linesObject);
       this.linesObject = null;
@@ -699,9 +640,6 @@ export class ParticleSystemRenderer {
     this.trailDotsMaterial?.dispose();
     this.pointsGeometry?.dispose();
     this.pointsMaterial?.dispose();
-    this.headGeometry?.dispose();
-    this.headMaterial?.dispose();
-    this.headTexture?.dispose();
     this.linesGeometry?.dispose();
     this.linesMaterial?.dispose();
 
@@ -709,45 +647,7 @@ export class ParticleSystemRenderer {
     this.trailDotsMaterial = null;
     this.pointsGeometry = null;
     this.pointsMaterial = null;
-    this.headGeometry = null;
-    this.headMaterial = null;
-    this.headTexture = null;
     this.linesGeometry = null;
     this.linesMaterial = null;
-  }
-
-  private updateHeadTexture(thickness: number): void {
-    const nextTexture = this.createRingTexture(thickness);
-    if (this.headMaterial) {
-      this.headMaterial.map = nextTexture;
-      this.headMaterial.alphaMap = nextTexture;
-      this.headMaterial.needsUpdate = true;
-    }
-    this.headTexture?.dispose();
-    this.headTexture = nextTexture;
-  }
-
-  private createRingTexture(thickness: number): CanvasTexture {
-    const size = 96;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Failed to create head circle texture.");
-    }
-
-    const radius = size * 0.34;
-    const clampedThickness = Math.max(0.06, Math.min(0.48, thickness));
-    context.clearRect(0, 0, size, size);
-    context.strokeStyle = "#ffffff";
-    context.lineWidth = Math.max(2, radius * clampedThickness);
-    context.beginPath();
-    context.arc(size * 0.5, size * 0.5, radius, 0, Math.PI * 2);
-    context.stroke();
-
-    const texture = new CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    return texture;
   }
 }

@@ -2,9 +2,6 @@ import "./style.css";
 import { GIFEncoder, applyPalette, quantize } from "gifenc";
 import { AmbientLight, Color, DirectionalLight, HemisphereLight, OrthographicCamera, Scene, Vector3, WebGLRenderer } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
-import { AfterimagePass } from "three/examples/jsm/postprocessing/AfterimagePass.js";
 import {
   captureVoidLayout,
   constrainVoidsInsideFrame,
@@ -217,7 +214,7 @@ const uiParams: UiParams = {
   soloNoisePlane: false,
   bevelStrength: 1,
   mainTitle: "FLOW MATTER",
-  description: "Reference-driven 2D flow field.\nProcedural reconstruction of Reference.gif.",
+  description: "Make your unique ART configuration\nCreate > Meditate > Export",
   textColor: "#d5deeb",
   folderNameColor: "#d2dbe9",
   mainColor: "#3a3b42",
@@ -269,12 +266,6 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, renderParams.pixelRatio
 renderer.domElement.className = "viewport-canvas";
 viewport.appendChild(renderer.domElement);
 
-const composer = new EffectComposer(renderer);
-const renderPass = new RenderPass(scene, camera);
-const afterimagePass = new AfterimagePass();
-composer.addPass(renderPass);
-composer.addPass(afterimagePass);
-
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 0, 0);
 controls.enableRotate = false;
@@ -309,6 +300,40 @@ let hoverPressSuppressedVoidIndex: number | null = null;
 const pressedVoidIndices = new Set<number>();
 let latestElapsedSeconds = 0;
 let exportInProgress = false;
+const defaultAudio = new Audio(`${import.meta.env.BASE_URL}DefaultSound_01.mp3`);
+defaultAudio.loop = true;
+defaultAudio.preload = "auto";
+defaultAudio.autoplay = true;
+defaultAudio.muted = false;
+let audioMuted = false;
+
+const syncAudioUiState = (): void => {
+  controlPanel?.setAudioMuted(audioMuted);
+};
+
+const removeAudioBootstrapListeners = (): void => {
+  window.removeEventListener("pointerup", onAudioBootstrapInteraction);
+  window.removeEventListener("keydown", onAudioBootstrapInteraction);
+};
+
+const tryStartDefaultAudio = async (): Promise<boolean> => {
+  if (audioMuted) {
+    return true;
+  }
+
+  try {
+    defaultAudio.muted = false;
+    await defaultAudio.play();
+    removeAudioBootstrapListeners();
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+function onAudioBootstrapInteraction(): void {
+  void tryStartDefaultAudio();
+}
 
 const getAspectFrameSize = (mode: AspectRatioMode): { width: number; height: number } => {
   const previewLayout = mode === aspectRatioMode ? layout : createReferenceLayout(mode);
@@ -381,11 +406,7 @@ const getFrameCaptureRect = (): { x: number; y: number; width: number; height: n
 
 const renderCurrentFrame = (): void => {
   controls.update();
-  if (lookParams.feedbackTrail) {
-    composer.render();
-  } else {
-    renderer.render(scene, camera);
-  }
+  renderer.render(scene, camera);
 };
 
 const captureFrameCanvas = (
@@ -695,7 +716,6 @@ const loadLayoutFromStorage = (layoutId: string | null): void => {
   window.localStorage.setItem(getReferenceLayoutStorageKey(aspectRatioMode), JSON.stringify(captureVoidLayout(layout)));
 
   clearVoidInteractionState();
-  composer.reset();
   rebuildSimulation();
   controlPanel?.setStatus("Layout loaded.");
   syncSavedLayoutDropdown();
@@ -716,7 +736,6 @@ const resetLayoutToDefault = (): void => {
 
   window.localStorage.removeItem(getReferenceLayoutStorageKey(aspectRatioMode));
   clearVoidInteractionState();
-  composer.reset();
   rebuildSimulation();
   controlPanel?.setStatus("Layout reset to default.");
   syncSavedLayoutDropdown();
@@ -726,7 +745,6 @@ const applyLookSettings = (): void => {
   scene.background = new Color(lookParams.backgroundColor);
   viewport.style.backgroundColor = lookParams.backgroundColor;
   renderer.setClearColor(lookParams.backgroundColor, 1);
-  afterimagePass.uniforms.damp.value = lookParams.feedbackDamp;
 
   const sphereBrightness = clamp(lookParams.sphereBrightness, 0, 2);
   const sphereContrast = clamp(lookParams.sphereContrast, 0, 2);
@@ -737,12 +755,10 @@ const applyLookSettings = (): void => {
 
   particleSystem.applyLook(lookParams);
   frameOverlay.update(lookParams, topologyParams);
-  composer.reset();
 };
 
 const applyRenderSettings = (): void => {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, renderParams.pixelRatioCap));
-  composer.setPixelRatio(Math.min(window.devicePixelRatio, renderParams.pixelRatioCap));
   fieldDebugOverlay.setVisible(renderParams.showFieldDebug);
 };
 
@@ -795,7 +811,6 @@ controlPanel = createControlPanel(
   {
     onAspectRatioChange: (mode): void => {
       applyAspectRatioMode(mode);
-      composer.reset();
       controlPanel?.setStatus(mode === "portrait" ? "Portrait format." : mode === "square" ? "Square format." : "Landscape format.");
     },
     onLiveChange: (): void => {
@@ -828,10 +843,22 @@ controlPanel = createControlPanel(
     onExportGif: (): void => {
       void exportFrameGif();
     },
+    onAudioToggle: (): void => {
+      audioMuted = !audioMuted;
+      defaultAudio.muted = audioMuted;
+      syncAudioUiState();
+      if (!audioMuted && defaultAudio.paused) {
+        void tryStartDefaultAudio();
+      }
+    },
   },
 );
 
 syncSavedLayoutDropdown();
+syncAudioUiState();
+window.addEventListener("pointerup", onAudioBootstrapInteraction, { passive: true });
+window.addEventListener("keydown", onAudioBootstrapInteraction);
+void tryStartDefaultAudio();
 
 updateCameraFrustum();
 applyRenderSettings();
@@ -841,7 +868,6 @@ controlPanel.setStatus("Reference flow loaded.");
 const onResize = (): void => {
   updateCameraFrustum();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);
   applyRenderSettings();
 };
 
@@ -849,9 +875,6 @@ window.addEventListener("resize", onResize);
 
 const updateEditedVoid = (): void => {
   frameOverlay.update(lookParams, topologyParams);
-  if (lookParams.feedbackTrail) {
-    composer.reset();
-  }
 };
 
 const applyVoidRadius = (voidIndex: number, nextRadius: number): void => {
@@ -1140,15 +1163,14 @@ renderer.setAnimationLoop((timestampMs: number) => {
   particleSystem.update(deltaSeconds, elapsedSeconds, flowParams, topologyParams, lookParams);
   frameOverlay.update(lookParams, topologyParams);
   fieldDebugOverlay.update(elapsedSeconds, flowParams, topologyParams);
-  if (lookParams.feedbackTrail) {
-    composer.render();
-  } else {
-    renderer.render(scene, camera);
-  }
+  renderer.render(scene, camera);
 });
 
 const dispose = (): void => {
   window.removeEventListener("resize", onResize);
+  removeAudioBootstrapListeners();
+  defaultAudio.pause();
+  defaultAudio.src = "";
   renderer.domElement.removeEventListener("pointerdown", onCanvasPointerDown);
   renderer.domElement.removeEventListener("pointermove", onCanvasPointerMove);
   renderer.domElement.removeEventListener("pointerup", onCanvasPointerUp);
@@ -1163,7 +1185,6 @@ const dispose = (): void => {
   frameOverlay.dispose();
   fieldDebugOverlay.dispose();
   controls.dispose();
-  composer.dispose();
   renderer.dispose();
 };
 

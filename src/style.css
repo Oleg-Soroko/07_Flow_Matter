@@ -305,6 +305,80 @@ body {
   margin-bottom: 0;
 }
 
+.audio-toggle-button {
+  appearance: none;
+  position: absolute;
+  top: 0.78rem;
+  right: 0.9rem;
+  width: 2.18rem;
+  height: 2.18rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--ui-main-color) 76%, #ffffff),
+    color-mix(in srgb, var(--ui-main-color) 62%, #0f1621)
+  );
+  box-shadow:
+    calc(var(--elev-x) * 0.5) calc(var(--elev-y) * 0.5) calc(var(--elev-blur) * 0.5) rgba(7, 11, 17, calc(var(--elev-alpha) * 0.9)),
+    -2px -2px 7px rgba(255, 255, 255, 0.03);
+  display: grid;
+  place-items: center;
+  line-height: 0;
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.audio-toggle-button:hover {
+  border-color: var(--line-strong);
+  box-shadow:
+    inset 4px 4px 10px rgba(6, 10, 16, 0.75),
+    inset -3px -3px 8px rgba(255, 255, 255, 0.03);
+}
+
+.audio-toggle-button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.audio-toggle-icon {
+  width: 1.12rem;
+  height: 1.12rem;
+  display: grid;
+  place-items: center;
+  margin: 0 auto;
+}
+
+.audio-toggle-glyph {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+
+.audio-toggle-glyph-off {
+  display: none;
+}
+
+.audio-toggle-button[data-muted="true"] .audio-toggle-glyph-on {
+  display: none;
+}
+
+.audio-toggle-button[data-muted="true"] .audio-toggle-glyph-off {
+  display: block;
+}
+
 .panel::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -850,6 +924,12 @@ button:disabled {
     inset -2px -2px 4px rgba(255, 255, 255, 0.02);
 }
 
+.control-row-color {
+  grid-template-columns: minmax(0, 1fr) clamp(4.8rem, 24%, 6.4rem);
+  align-items: center;
+  gap: 0.6rem;
+}
+
 .control-row-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -860,6 +940,10 @@ button:disabled {
   font-size: 0.69rem;
   color: var(--muted);
   letter-spacing: 0.02em;
+}
+
+.control-row-color .control-label {
+  min-width: 0;
 }
 
 .control-value {
@@ -1154,6 +1238,11 @@ button:disabled {
     inset -2px -2px 5px rgba(255, 255, 255, 0.02);
 }
 
+.control-row-color input[type="color"] {
+  grid-column: auto;
+  min-height: 1.9rem;
+}
+
 .texture-input-row {
   grid-column: 1 / -1;
   display: grid;
@@ -1190,6 +1279,19 @@ button:disabled {
   user-select: none;
 }
 
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+  padding: 0.52rem 0.56rem;
+  border-radius: var(--radius-control);
+  border: 1px solid rgba(137, 156, 186, 0.1);
+  background: linear-gradient(165deg, var(--control-bg-hi), var(--control-bg-lo));
+  box-shadow:
+    inset calc(var(--inner-x) * 0.66) calc(var(--inner-y) * 0.66) calc(var(--inner-blur) * 0.66) rgba(6, 10, 16, calc(var(--inner-alpha) * 0.88)),
+    inset -2px -2px 4px rgba(255, 255, 255, 0.02);
+}
+
 .checkbox-input {
   position: absolute;
   width: 1px;
@@ -1204,12 +1306,12 @@ button:disabled {
   width: 2.08rem;
   height: 1.12rem;
   border-radius: 999px;
-  border: 1px solid rgba(137, 156, 186, 0.2);
-  background: linear-gradient(165deg, #1d2431, #171d28);
+  border: 1px solid rgba(92, 108, 132, 0.18);
+  background: linear-gradient(165deg, #131922, #0c1118);
   box-shadow:
-    inset 3px 3px 7px rgba(6, 10, 16, 0.72),
-    inset -2px -2px 5px rgba(255, 255, 255, 0.02);
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+    inset 3px 3px 7px rgba(4, 7, 12, 0.82),
+    inset -2px -2px 5px rgba(255, 255, 255, 0.012);
+  transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
 }
 
 .checkbox-toggle::after {
@@ -1221,20 +1323,31 @@ button:disabled {
   height: 0.78rem;
   border-radius: 50%;
   transform: translateY(-50%);
-  border: 1px solid rgba(161, 178, 204, 0.3);
-  background: linear-gradient(160deg, #303949, #212837);
+  border: 1px solid rgba(118, 132, 154, 0.2);
+  background: linear-gradient(160deg, #262d39, #171d28);
   box-shadow:
-    4px 4px 8px rgba(8, 12, 18, 0.64),
-    -2px -2px 6px rgba(255, 255, 255, 0.03);
-  transition: transform 150ms ease, box-shadow 150ms ease;
+    4px 4px 8px rgba(8, 12, 18, 0.72),
+    -2px -2px 6px rgba(255, 255, 255, 0.018);
+  transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease, background 150ms ease;
 }
 
 .checkbox-input:checked + .checkbox-toggle {
   border-color: var(--accent);
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--ui-main-color) 58%, #172334),
+    color-mix(in srgb, var(--ui-main-color) 42%, #0d1622)
+  );
+  box-shadow:
+    inset 3px 3px 7px rgba(6, 10, 16, 0.72),
+    inset -2px -2px 5px rgba(255, 255, 255, 0.02),
+    0 0 0 1px rgba(143, 174, 214, 0.08);
 }
 
 .checkbox-input:checked + .checkbox-toggle::after {
   transform: translate(0.94rem, -50%);
+  border-color: rgba(170, 196, 232, 0.46);
+  background: linear-gradient(160deg, #364154, #232c3a);
   box-shadow:
     4px 4px 8px rgba(8, 12, 18, 0.64),
     -2px -2px 6px rgba(255, 255, 255, 0.04),
