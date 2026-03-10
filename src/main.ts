@@ -11,6 +11,7 @@ import {
   restoreVoidLayout,
 } from "./referenceLayout";
 import type { SavedReferenceLayout } from "./referenceLayout";
+import { PROJECT_DEFAULT_SAVED_LAYOUTS } from "./defaultSavedLayouts";
 import { FieldDebugOverlay } from "./render/fieldDebugOverlay";
 import { FrameOverlay } from "./render/frameOverlay";
 import { ParticleSystemRenderer } from "./sim/particleSystem";
@@ -66,7 +67,9 @@ const viewport = requireElement<HTMLDivElement>(root, "#viewport");
 const overlay = requireElement<HTMLDivElement>(root, "#overlay");
 let aspectRatioMode: AspectRatioMode = "portrait";
 let layout = createReferenceLayout(aspectRatioMode);
-restoreSavedLayout(aspectRatioMode, layout);
+if (!restoreSavedLayout(aspectRatioMode, layout)) {
+  restoreProjectDefaultLayout(aspectRatioMode, layout);
+}
 
 const getNamedLayoutStorageKey = (mode: AspectRatioMode): string =>
   `${getReferenceLayoutStorageKey(mode)}.named`;
@@ -194,6 +197,23 @@ function restoreSavedLayout(mode: AspectRatioMode, targetLayout: typeof layout):
     window.localStorage.removeItem(getReferenceLayoutStorageKey(mode));
     return false;
   }
+}
+
+function restoreProjectDefaultLayout(mode: AspectRatioMode, targetLayout: typeof layout): boolean {
+  const snapshot = PROJECT_DEFAULT_SAVED_LAYOUTS[mode];
+  if (!snapshot) {
+    return false;
+  }
+
+  const restored = restoreVoidLayout(targetLayout, snapshot);
+  if (!restored) {
+    return false;
+  }
+
+  if (mode !== "portrait") {
+    constrainVoidsInsideFrame(targetLayout);
+  }
+  return true;
 }
 
 const syncSavedLayoutDropdown = (): void => {
@@ -722,8 +742,7 @@ const loadLayoutFromStorage = (layoutId: string | null): void => {
 };
 
 const resetLayoutToDefault = (): void => {
-  const defaultLayout = createReferenceLayout(aspectRatioMode);
-  const restored = restoreVoidLayout(layout, captureVoidLayout(defaultLayout));
+  const restored = restoreProjectDefaultLayout(aspectRatioMode, layout);
   if (!restored) {
     controlPanel?.setStatus("Failed to reset layout.", "error");
     return;
@@ -772,7 +791,9 @@ const rebuildSimulation = (): void => {
 const applyAspectRatioMode = (mode: AspectRatioMode): void => {
   aspectRatioMode = mode;
   layout = createReferenceLayout(mode);
-  restoreSavedLayout(mode, layout);
+  if (!restoreSavedLayout(mode, layout)) {
+    restoreProjectDefaultLayout(mode, layout);
+  }
   selectedSavedLayoutId = readNamedLayoutStore(mode).selectedId;
   applySymmetryIfEnabled(false);
 
