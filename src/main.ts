@@ -320,12 +320,14 @@ let hoverPressSuppressedVoidIndex: number | null = null;
 const pressedVoidIndices = new Set<number>();
 let latestElapsedSeconds = 0;
 let exportInProgress = false;
+const defaultAudioVolume = 0.5;
 const defaultAudio = new Audio(`${import.meta.env.BASE_URL}DefaultSound_01.mp3`);
 defaultAudio.loop = true;
 defaultAudio.preload = "auto";
 defaultAudio.autoplay = true;
-defaultAudio.muted = false;
-let audioMuted = false;
+defaultAudio.volume = defaultAudioVolume;
+defaultAudio.muted = true;
+let audioMuted = true;
 
 const syncAudioUiState = (): void => {
   controlPanel?.setAudioMuted(audioMuted);
